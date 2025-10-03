@@ -1,0 +1,68 @@
+/* Global styles for the page */
+body {
+  background-color: #d1d7db; /* A slightly darker background */
+  font-family: Arial, sans-serif;
+  margin: 0;
+}
+
+/* The new main container for the desktop layout */
+.desktop-container {
+  display: flex;
+  width: 90%;
+  max-width: 1200px;
+  height: 95vh;
+  margin: 2.5vh auto; /* Center the container vertically and horizontally */
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* The right panel, which holds the active chat or placeholder */
+.chat-container {
+  flex-grow: 1; /* Takes up the remaining space */
+  display: flex;
+  flex-direction: column;
+  background-color: #fff;
+  height: 100%; /* Ensure it fills the parent's height */
+}
+
+.chat-header {
+    background-color: #f0f2f5;
+    color: #333; /* Darker text for light background */
+    padding: 15px 20px;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    margin-right: 15px;
+}
+
+.header-info h3 { margin: 0; font-size: 1em; }
+.header-info p { margin: 0; font-size: 0.8em; color: #666; }
+
+/* Placeholder for non-active chats */
+.placeholder-chat {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  text-align: center;
+  color: #888;
+  background-color: #f0f2f5;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.placeholder-icon {
+    font-size: 4em;
+    color: #ccc;
+    margin-bottom: 20px;
+}
+

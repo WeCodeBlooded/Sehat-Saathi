@@ -1,0 +1,114 @@
+.locator-page {
+  padding: 20px;
+}
+
+.locator-header {
+  margin-bottom: 25px;
+}
+
+.locator-header h2 { margin: 0; font-size: 1.8em; color: #333; }
+.locator-header p { margin: 5px 0 0; color: #666; font-size: 1em; }
+
+.status-text, .error-text {
+  text-align: center;
+  color: #888;
+  padding: 30px;
+  background-color: #f9f9f9;
+  border-radius: 8px;
+}
+
+.error-text {
+  color: #d93025;
+  background-color: #fcebeb;
+}
+
+.hospitals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.hospital-card {
+  position: relative; /* Needed for the recommended badge */
+  display: flex;
+  align-items: center;
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.07);
+  border-left: 5px solid transparent; /* Placeholder for regular items */
+  overflow: hidden; /* Keeps the badge inside */
+}
+
+.hospital-icon {
+  font-size: 1.5em;
+  color: #666;
+  margin-right: 20px;
+}
+
+.hospital-details h4 {
+  margin: 0 0 5px 0;
+  color: #333;
+}
+.hospital-details p {
+  margin: 0;
+  color: #666;
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+/* Styles for the recommended hospital */
+.hospital-card.recommended {
+  border-left-color: #075E54; /* Highlight bar */
+  background-color: #f5f9ff;
+}
+
+.hospital-card.recommended .hospital-icon {
+  color: #075E54;
+}
+
+/* The "Recommended" badge */
+.hospital-card.recommended::after {
+  content: 'AI Recommended';
+  position: absolute;
+  top: 10px;
+  right: -30px;
+  background-color: #128C7E;
+  color: white;
+  padding: 4px 30px;
+  font-size: 0.7em;
+  font-weight: bold;
+  transform: rotate(45deg);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+/* New UI additions */
+.locator-actions { display:flex; gap:8px; margin-bottom:12px; }
+.locator-search { flex:1; padding:8px 10px; border-radius:6px; border:1px solid #ddd; }
+.refresh-btn { padding:8px 12px; border-radius:6px; border:none; background:#2b8aef; color:#fff; cursor:pointer; }
+.fav-filter { display:flex; align-items:center; gap:6px; font-size:0.9em; color:#444; }
+.recommended-badge { background:#2ecc40; color:#fff; padding:2px 8px; border-radius:12px; font-size:12px; margin-left:8px; }
+.hospital-actions { margin-top:8px; display:flex; gap:8px; }
+.action-btn { padding:6px 10px; border-radius:6px; background:#eef6ff; color:#0366d6; text-decoration:none; }
+.fav-btn { padding:6px 10px; border-radius:6px; background:#fff; border:1px solid #ddd; cursor:pointer; }
+.fav-btn.fav { background:#fffae6; border-color:#ffd24d; }
+.status-text { color:#666; }
+.error-text { color:#b00020; }
+
+/* Clickable card behavior */
+.hospital-card { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; }
+.hospital-card:active { transform: translateY(1px); }
+.hospital-card.expanded { box-shadow: 0 8px 30px rgba(0,0,0,0.12); transform: translateY(-4px); }
+.hospital-distance { font-size: 0.85em; color: #444; margin-top:6px; }
+.hospital-address { color:#666; font-size:0.9em; }
+.hospital-expanded { margin-top:10px; padding-top:8px; border-top:1px dashed #eee; color:#444; }
+.hospital-expanded .notes { font-size:0.9em; color:#555; margin-top:6px; }
+
+.book-appointment-btn { margin-left:8px; padding:6px 10px; background:#128C7E; color:#fff; border:none; border-radius:6px; cursor:pointer; }
+.book-appointment-btn:hover { background:#075E54; }
+
+@media (max-width: 800px) {
+  .locator-page { padding: 12px; }
+  .hospital-card { flex-direction: column; align-items: flex-start; }
+  .hospital-icon { margin-bottom: 8px; }
+}

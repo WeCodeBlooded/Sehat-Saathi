@@ -1,0 +1,86 @@
+.sidebar-container {
+  width: 320px;
+  max-width: 36vw;
+  background-color: #ffffff;
+  border-right: 1px solid #e6e9eb;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.sidebar-header {
+  padding: 12px 14px;
+  background-color: #f7fbfc;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sidebar-profile-pic {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.search-bar {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #e7eef1;
+  background-color: #fff;
+  font-size: 0.95rem;
+}
+
+.chat-list {
+  overflow-y: auto;
+  flex-grow: 1;
+}
+
+.chat-list-item {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #f6f8f9;
+}
+
+.chat-list-item:hover {
+  background-color: #fbfcfc;
+}
+
+.chat-list-item.active {
+  background-color: #eef9fb;
+  border-left: 4px solid #2aa6a6;
+  padding-left: 10px; /* compensate for left border */
+}
+
+.chat-avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 10px;
+  margin-right: 12px;
+  object-fit: cover;
+}
+
+.chat-name {
+  margin: 0 0 4px 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: #1f2d3d;
+}
+.chat-preview {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #637082;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ensure the preview and name align nicely when avatar is taller */
+.chat-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
