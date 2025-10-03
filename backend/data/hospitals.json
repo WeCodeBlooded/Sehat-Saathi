@@ -1,0 +1,12 @@
+[
+  {
+    "name": "City Hospital",
+    "address": "123 Main Street, City",
+    "phone": "123-456-7890"
+  },
+  {
+    "name": "General Hospital",
+    "address": "456 Elm Street, City",
+    "phone": "987-654-3210"
+  }
+]

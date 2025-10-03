@@ -1,0 +1,53 @@
+{
+  "fever": "Stay hydrated with water or oral rehydration solution. Rest in a cool environment, wear light clothing, and use a cool compress on the forehead. Avoid self-medicating with antibiotics unless prescribed. If the fever is above 102°F (39°C), lasts more than 3 days, or is accompanied by severe headache, rash, or breathing difficulty, consult a doctor immediately.",
+  "have fever": "Stay hydrated with water or oral rehydration solution. Rest in a cool environment, wear light clothing, and use a cool compress on the forehead. Avoid self-medicating with antibiotics unless prescribed. If the fever is above 102°F (39°C), lasts more than 3 days, or is accompanied by severe headache, rash, or breathing difficulty, consult a doctor immediately.",
+  "feeling feverish": "Drink plenty of fluids and rest. A lukewarm sponge bath may help. Use acetaminophen or ibuprofen only in the correct dosage if required. Seek medical advice if symptoms worsen.",
+  "temperature": "Monitor body temperature every 4–6 hours. Drink water frequently to prevent dehydration. If the temperature remains high or increases suddenly, seek medical advice.",
+
+  "cough": "For dry cough: drink warm water frequently, try honey in warm tea, and use a humidifier. For wet cough: stay hydrated and do steam inhalation to loosen mucus. Avoid smoking or exposure to pollution. If the cough lasts more than 2 weeks, produces blood, or causes chest pain, consult a doctor.",
+  "dry cough": "Sip warm fluids, use a humidifier in your room, and rest your throat. Lozenges may help. If cough persists for more than 3 weeks or causes wheezing, seek medical care.",
+  "wet cough": "Take warm fluids and do steam inhalation to ease mucus. Sleep with head elevated. If accompanied by fever, shortness of breath, or greenish mucus, check with a doctor.",
+
+  "cold": "Rest well, drink warm fluids such as ginger tea, and inhale steam to relieve nasal blockage. Over-the-counter saline sprays or antihistamines may help. Most colds resolve in a week. Seek care if symptoms last longer than 10 days or worsen.",
+  "running nose": "Keep tissues handy, use saline drops to clear airways, drink warm fluids, and rest. If runny nose continues more than 10 days, consult a doctor.",
+  "sneezing": "Avoid dust, pollen, and allergens. Wash your hands regularly. If sneezing is linked to allergies, an antihistamine may help.",
+
+  "headache": "Lie down in a quiet, dark room and drink water. Apply a cool cloth to your forehead. Avoid screens and loud environments. Common causes include dehydration, stress, or eye strain. If headaches are frequent, severe, or sudden, seek medical help.",
+  "migraine": "Rest in a quiet, dark room. Stay hydrated and avoid known triggers like caffeine, stress, or lack of sleep. Medications like triptans may be needed if diagnosed. If migraines are frequent, consult a neurologist.",
+
+  "stomach ache": "Drink warm water and eat light meals like rice, bananas, or toast (BRAT diet). Avoid spicy or oily foods. Place a hot water bag on your abdomen for relief. If there is severe cramping, blood in stool, vomiting, or persistent pain, see a doctor.",
+  "abdominal pain": "Rest, hydrate, and eat light food. Avoid overeating, caffeine, and alcohol. Seek urgent medical help if pain is sharp and sudden, especially in the lower right side (appendix).",
+
+  "vomiting": "Drink small sips of water frequently; avoid solid food until vomiting stops. Eat bland food like crackers when able. Ginger tea may help relieve nausea. If vomiting is severe, persistent, or accompanied by blood, dehydration, or abdominal pain, seek a doctor.",
+  "nausea": "Eat bland meals, avoid greasy food, and sip ginger or peppermint tea. If nausea persists longer than 2 days, see a doctor.",
+
+  "diarrhea": "Drink oral rehydration solutions (ORS) after each loose stool. Eat light foods like bananas, rice, applesauce, and toast (BRAT diet). Avoid dairy, alcohol, and fried foods until recovery. If diarrhea is prolonged (>3 days), has blood/mucus, or causes dehydration, seek medical help.",
+  "loose motion": "Hydrate with plenty of fluids or ORS. Rest and avoid rich or fatty food. Consult a doctor if dehydration, dizziness, or bloody stools occur.",
+
+  "constipation": "Eat high-fiber foods like vegetables and whole grains, drink plenty of water, and exercise regularly. Avoid processed foods. If constipation persists for weeks, causes bleeding, or severe pain, seek medical advice.",
+
+  "sore throat": "Gargle with warm salt water twice a day. Sip warm tea with honey. Lozenges or sprays may soothe pain. If throat pain is severe, with difficulty swallowing or fever, a bacterial infection may be present → consult doctor.",
+
+  "toothache": "Rinse mouth with warm salt water. Use a cold compress outside the cheek. Over-the-counter painkillers may reduce pain. Avoid very hot or cold foods. If pain continues beyond 24–48 hours, visit a dentist.",
+
+  "back pain": "Apply heat/cold packs, practice gentle stretches, and rest. Maintain good posture. Avoid heavy lifting. If pain radiates to legs, causes numbness, or lasts more than 2 weeks, consult a doctor.",
+  "lower back pain": "Apply warm compresses, avoid heavy bending, and sleep on a firm mattress. See a physician if pain does not improve or is accompanied by weakness or numbness.",
+
+  "chest pain": "This can be a sign of a serious condition like heart attack. Call emergency services immediately. Do not wait for self-treatment.",
+  "heart pain": "Seek emergency medical attention immediately. Do not ignore chest discomfort, especially with shortness of breath or dizziness.",
+
+  "dizziness": "Lie down immediately and avoid sudden changes in position. Drink water and eat something light. If frequent, consult a doctor to check for vertigo, anemia, or low blood pressure.",
+
+  "fatigue": "Get at least 7–8 hours of sleep. Eat balanced meals and stay hydrated. Manage stress by relaxation techniques. Persistent fatigue may indicate anemia, thyroid, or other conditions → consult doctor.",
+  "tired": "Rest, hydrate, and take breaks. Frequent tiredness over weeks should be evaluated by a doctor.",
+
+  "injury": "Clean wounds with clean water, apply antiseptic, and cover with a sterile bandage. For deep cuts or heavy bleeding, apply pressure and seek medical help immediately.",
+  "cut": "Wash well with clean water. Apply antiseptic ointment and cover it. If cut is deep or bleeding does not stop, seek medical attention.",
+  "burn": "Place the burn under cool (not ice) running water for 10–15 minutes. Do not use toothpaste, butter, or oil. Cover with clean gauze. For severe, large, or blistering burns, see a doctor immediately.",
+
+  "allergy": "Avoid known allergens like dust, pets, or pollen. Wash skin with cold water if rash occurs. Oral antihistamines may reduce symptoms. Seek emergency care if swelling of lips, tongue, or breathing difficulty occurs.",
+  "skin rash": "Keep affected area clean and dry. Apply mild moisturizer or calamine lotion. If severe, spreading, or itchy rash persists, consult a dermatologist.",
+
+  "eye pain": "Rinse eyes with clean water. Rest eyes from screen use. Use artificial tears if dry. If pain persists, or vision is affected, seek eye doctor advice.",
+  "red eyes": "Wash eyes with clean cool water, rest well, and avoid rubbing eyes. May indicate infection (conjunctivitis). If painful or with pus, see a doctor."
+}
