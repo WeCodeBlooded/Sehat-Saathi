@@ -1,0 +1,175 @@
+.history-container {
+  padding: 20px;
+  position: relative;
+  /* Ensure it can contain the floating button */
+  height: 100%; 
+  box-sizing: border-box;
+}
+
+.history-header {
+  margin-bottom: 25px;
+}
+
+.history-header h2 { margin: 0; font-size: 1.8em; color: #333; }
+.history-header p { margin: 5px 0 0; color: #666; font-size: 1em; }
+
+/* Timeline Styles */
+.timeline {
+  position: relative;
+  margin-left: 15px;
+  padding-left: 25px;
+  border-left: 3px solid #e0f2f7; /* Light blue timeline */
+}
+
+.timeline-item {
+  position: relative;
+  margin-bottom: 25px;
+}
+
+.timeline-dot {
+  position: absolute;
+  left: -34.5px; /* (Distance from left edge + half of line width + half of dot width) */
+  top: 5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: #075E54;
+  border: 3px solid #c1dce9;
+}
+
+.record-card {
+  background: white;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.07);
+}
+
+.record-date {
+  font-size: 0.8em;
+  color: #888;
+  margin-bottom: 5px;
+  display: block;
+}
+
+.record-symptom {
+  margin: 0 0 8px 0;
+  color: #333;
+}
+
+.record-notes {
+  margin: 0;
+  color: #666;
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+/* Floating Action Button */
+.add-record-button {
+  position: absolute; /* Changed to absolute to stay within the content area */
+  bottom: 30px; 
+  right: 30px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background-color: #128C7E;
+  color: white;
+  border: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  font-size: 1.5em;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.add-record-button:hover {
+  background-color: #075E54;
+  transform: scale(1.1);
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  animation: fadeIn 0.3s;
+}
+
+.modal-content {
+  background: white;
+  padding: 30px;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 500px;
+  box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+}
+
+.modal-content h3 {
+  margin-top: 0;
+  margin-bottom: 20px;
+}
+
+.modal-content .input-group {
+  margin-bottom: 15px;
+}
+.modal-content .input-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: 500;
+}
+.modal-content .input-group input,
+.modal-content .input-group textarea {
+  width: 100%;
+  padding: 10px;
+  border-radius: 4px;
+  border: 1px solid #ddd;
+  box-sizing: border-box;
+}
+
+/* Hide native file input but keep accessible via JS trigger */
+.modal-content .input-group input[type="file"] { display: none; }
+
+.attach-btn { padding: 8px 12px; border-radius:6px; background:#128C7E; color:#fff; border:none; cursor:pointer; }
+.attach-btn:hover { background:#075E54; }
+
+.preview-row {
+  display:flex;
+  gap:10px;
+  margin-top:10px;
+  flex-wrap:wrap;
+}
+.preview-item { position: relative; width: 120px; height: 80px; border-radius:6px; overflow:hidden; background:#fafafa; display:flex; align-items:center; justify-content:center; }
+.preview-item img, .preview-item video { width:100%; height:100%; object-fit:cover; }
+.remove-file { position: absolute; top:6px; right:6px; background:rgba(0,0,0,0.6); color:#fff; border:none; padding:4px 6px; border-radius:4px; cursor:pointer; font-size:0.8em; }
+
+.modal-buttons {
+  margin-top: 25px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal-buttons button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.cancel-btn {
+  background-color: #f1f1f1;
+}
+
+.save-btn {
+  background-color: #075E54;
+  color: white;
+}

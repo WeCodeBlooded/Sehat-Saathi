@@ -1,0 +1,118 @@
+body {
+    /* Ensure body has full height to support the gradient */
+    min-height: 100vh;
+    margin: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.auth-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh; /* Use min-height to ensure it covers the viewport */
+    background: linear-gradient(135deg, #e0f2f7 0%, #c1dce9 100%); /* Light blue gradient */
+}
+
+.auth-form {
+    background: white;
+    padding: 45px 35px; /* Increased padding */
+    border-radius: 12px; /* Softer rounded corners */
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1); /* Deeper, softer shadow */
+    width: 100%;
+    max-width: 420px; /* Slightly wider */
+    text-align: center;
+    box-sizing: border-box; /* Include padding in width calculation */
+}
+
+.auth-form h2 {
+    margin-top: 0;
+    margin-bottom: 30px; /* More space below heading */
+    color: #075E54; /* Your app's primary color */
+    font-size: 2em;
+    font-weight: 600;
+}
+
+.input-group {
+    margin-bottom: 25px; /* More space between inputs */
+    text-align: left;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 8px; /* Space between label and input */
+    font-weight: 500;
+    color: #444;
+    font-size: 0.95em;
+}
+
+.input-group input {
+    width: calc(100% - 20px); /* Adjust for padding */
+    padding: 12px 10px; /* Increased padding */
+    border: 1px solid #c0d3e0; /* Softer border color */
+    border-radius: 6px; /* Slightly more rounded */
+    font-size: 1em;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.input-group input:focus {
+    border-color: #075E54; /* Highlight on focus */
+    box-shadow: 0 0 0 3px rgba(7, 94, 84, 0.2); /* Soft glow */
+    outline: none; /* Remove default outline */
+}
+
+.auth-button {
+    width: 100%;
+    padding: 14px; /* Larger button */
+    background-color: #128C7E; /* Your app's accent color */
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 1.1em; /* Larger text */
+    font-weight: bold;
+    cursor: pointer;
+    transition: background-color 0.3s ease, transform 0.2s ease;
+    letter-spacing: 0.5px;
+}
+
+.auth-button:hover {
+    background-color: #075E54; /* Darker on hover */
+    transform: translateY(-2px); /* Slight lift effect */
+}
+
+.auth-button[disabled] {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.toggle-auth {
+    margin-top: 25px; /* More space above toggle */
+    color: #075E54;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 500;
+    transition: color 0.2s ease;
+}
+
+.toggle-auth:hover {
+    color: #128C7E;
+    text-decoration: underline;
+}
+
+.show-btn {
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid #cfdbe3;
+    background: #fff;
+    cursor: pointer;
+}
+
+.error-message {
+    color: #e74c3c; /* Brighter red for error */
+    margin-bottom: 20px; /* More space below error */
+    font-size: 0.9em;
+    background-color: #fcebeb;
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #e74c3c;
+}
