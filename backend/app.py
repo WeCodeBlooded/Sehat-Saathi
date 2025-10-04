@@ -110,7 +110,8 @@ def resolve_genai_model():
         return None
 
 app = Flask(__name__)
-CORS(app)
+# Expanded CORS to ensure preflight (OPTIONS) succeeds for custom POST endpoints
+CORS(app, resources={r"/*": {"origins": "*"}}, allow_headers=["Content-Type","Authorization","X-Requested-With"], methods=["GET","POST","OPTIONS"], max_age=86400)
 
 # Initialize the Firebase Admin SDK
 # Use a service account key file (you'll download this from Firebase)
@@ -147,6 +148,34 @@ with open('data/responses.json', 'r') as file:
 with open('data/hospitals.json', 'r') as file:
     hospitals_data = json.load(file)
 
+# Simple in-memory doctor directory mapping specialties to available doctors.
+# In production this would come from a database or external service.
+DOCTOR_DIRECTORY = {
+    'cardiology': ['Dr. Arjun Mehta', 'Dr. Kavita Rao'],
+    'dermatology': ['Dr. Neha Kapoor', 'Dr. Rohan Iyer'],
+    'neurology': ['Dr. S. Menon', 'Dr. Priya Kaul'],
+    'orthopedics': ['Dr. Nikhil Shah', 'Dr. Aditi Verma'],
+    'pediatrics': ['Dr. Ritu Malhotra', 'Dr. Aman Batra'],
+    'general': ['Dr. Anil Singh', 'Dr. Farah Khan', 'Dr. Vivek Patel'],
+    'ent': ['Dr. Varun Sharma', 'Dr. K. Nanda'],
+    'ophthalmology': ['Dr. Ishita Bose', 'Dr. Deepak Gill']
+}
+
+def assign_doctor_for_specialty(spec: str):
+    if not spec:
+        spec = 'general'
+    key = spec.lower().strip()
+    # Fuzzy fallback: choose key with prefix match
+    if key not in DOCTOR_DIRECTORY:
+        for existing in DOCTOR_DIRECTORY.keys():
+            if existing.startswith(key):
+                key = existing
+                break
+    doctor_list = DOCTOR_DIRECTORY.get(key) or DOCTOR_DIRECTORY.get('general', [])
+    if not doctor_list:
+        return 'Dr. On Call', key
+    return random.choice(doctor_list), key
+
 # Initialize Overpass API instance with optional env-based endpoint/timeout
 try:
     overpass_endpoint = os.getenv('OVERPASS_ENDPOINT')  # e.g. https://overpass-api.de/api/interpreter
@@ -165,6 +194,9 @@ def register():
     data = request.get_json() or {}
     email = data.get('email', '').strip()
     password = data.get('password', '')
+    role = (data.get('role') or 'patient').strip().lower()
+    if role not in ('patient','doctor'):
+        return jsonify({'error': 'Invalid role; must be patient or doctor'}), 400
 
     if not email or not password:
         return jsonify({'error': 'Email and password are required'}), 400
@@ -184,13 +216,53 @@ def register():
         user = auth.create_user(email=email, password=password)
 
         profile_created = False
+        role_status = 'active'
+        patient_id = None
+        if role == 'doctor':
+            # Newly registered doctors require verification
+            role_status = 'pending'
+        else:
+            # Generate unique 6-digit patient id
+            if db is not None:
+                attempt = 0
+                while attempt < 10:
+                    candidate = str(random.randint(100000, 999999))
+                    # Ensure uniqueness
+                    exists = False
+                    try:
+                        snap = db.collection('users').where('patient_id','==',candidate).limit(1).stream()
+                        for _ in snap:
+                            exists = True
+                            break
+                    except Exception:
+                        exists = False
+                    if not exists:
+                        patient_id = candidate
+                        break
+                    attempt += 1
+                if patient_id is None:
+                    patient_id = str(random.randint(100000, 999999))  # fallback even if uniqueness uncertain
         if db is not None:
             try:
-                db.collection('users').document(user.uid).set({
+                user_doc = {
                     'email': user.email,
                     'created_at': firestore.SERVER_TIMESTAMP,
-                    'uid': user.uid
-                }, merge=True)
+                    'uid': user.uid,
+                    'role': role,
+                    'role_status': role_status
+                }
+                if patient_id:
+                    user_doc['patient_id'] = patient_id
+                db.collection('users').document(user.uid).set(user_doc, merge=True)
+                if role == 'doctor':
+                    # Add a doctors collection entry for admin review
+                    db.collection('doctors').document(user.uid).set({
+                        'uid': user.uid,
+                        'email': user.email,
+                        'status': 'pending',
+                        'submitted_at': firestore.SERVER_TIMESTAMP,
+                        'specialties': []
+                    }, merge=True)
                 profile_created = True
             except Exception as fe:
                 logging.warning(f"Firestore profile creation failed for {user.uid}: {fe}")
@@ -200,7 +272,10 @@ def register():
             'message': 'User created successfully',
             'uid': user.uid,
             'email': user.email,
-            'profileCreated': profile_created
+            'profileCreated': profile_created,
+            'role': role,
+            'roleStatus': role_status,
+            'patientId': patient_id
         }), 201
 
     except auth.EmailAlreadyExistsError:
@@ -233,12 +308,34 @@ def login():
         
         # Get user by email to return UID for client-side authentication
         user = auth.get_user_by_email(email)
+        user_role = 'patient'
+        role_status = 'active'
+        patient_id = None
+        if db is not None:
+            try:
+                doc = db.collection('users').document(user.uid).get()
+                if doc.exists:
+                    data_doc = doc.to_dict() or {}
+                    r = (data_doc.get('role') or '').lower()
+                    if r in ('patient','doctor'):
+                        user_role = r
+                    rs = (data_doc.get('role_status') or '').lower()
+                    if rs in ('pending','active','rejected'):
+                        role_status = rs
+                    pid = data_doc.get('patient_id')
+                    if isinstance(pid, str):
+                        patient_id = pid
+            except Exception:
+                pass
         
         return jsonify({
             'success': True,
             'message': 'User found',
             'uid': user.uid,
             'email': user.email,
+            'role': user_role,
+            'roleStatus': role_status,
+            'patientId': patient_id,
             'note': 'For hackathon: Use this UID in headers for authenticated requests'
         }), 200
         
@@ -261,6 +358,7 @@ def chat():
     body = request.get_json() or {}
     uid = body.get('uid')
     user_message = (body.get('message') or '').strip()
+    session_id = body.get('session_id')  # optional existing session id
 
     # Validate inputs
     if not uid:
@@ -338,14 +436,213 @@ def chat():
                 # Keep English fallback if translation fails
                 pass
 
+        # ---- Persist chat session & messages (prototype) ----
+        stored_session_id = session_id
+        if db is not None and uid:
+            try:
+                sessions_ref = db.collection('users').document(uid).collection('chat_sessions')
+                # Create session document if not provided
+                if not stored_session_id:
+                    new_ref = sessions_ref.document()
+                    new_ref.set({
+                        'created_at': firestore.SERVER_TIMESTAMP,
+                        'last_updated': firestore.SERVER_TIMESTAMP,
+                        'major_issue': None,
+                        'message_count': 0
+                    })
+                    stored_session_id = new_ref.id
+                # Append user + bot messages
+                if stored_session_id:
+                    sess_doc_ref = sessions_ref.document(stored_session_id)
+                    # store two message docs
+                    msg_coll = sess_doc_ref.collection('messages')
+                    now_server = firestore.SERVER_TIMESTAMP
+                    msg_coll.add({'role': 'user', 'text': user_message, 'ts': now_server})
+                    msg_coll.add({'role': 'bot', 'text': advice, 'ts': now_server})
+                    # increment message_count (read-modify-write minimal)
+                    sess_doc_ref.set({'last_updated': firestore.SERVER_TIMESTAMP, 'message_count': firestore.Increment(2)}, merge=True)
+            except Exception:
+                pass
+
         return jsonify({
             'message': advice,
             'language': original_language,
-            'translatedInbound': translated_inbound
+            'translatedInbound': translated_inbound,
+            'session_id': stored_session_id
         }), 200
 
     except Exception:
         return jsonify({'error': 'Failed to process chat'}), 500
+
+@app.route('/analyze_chat_session', methods=['POST'])
+def analyze_chat_session():
+    """Analyze a chat session (list of messages) to detect a major health issue.
+    Expects JSON: {
+       "uid": "...", 
+       "messages": [ {"role": "user|bot|doctor", "text": "..."}, ... ],
+       "save": true|false
+    }
+    Heuristic: use user (and doctor) messages, frequency of medical keywords, map to known response keys.
+    Stores a health_history record if 'save' true or default (true).
+    """
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    messages = data.get('messages')
+    save = data.get('save', True)
+    supplied_major_issue = (data.get('major_issue') or '').strip()
+    session_id = data.get('session_id')  # optional: update chat session doc when saving
+    if not uid:
+        return jsonify({'error': 'Field "uid" is required'}), 400
+
+    # Save-only shortcut (e.g. confirm on client) if major_issue provided without messages
+    if (not messages or not isinstance(messages, list) or len(messages)==0) and supplied_major_issue and save:
+        if db is None:
+            return jsonify({'error': 'Firestore not initialized'}), 500
+        try:
+            user_doc_ref = db.collection('users').document(uid)
+            health_history_ref = user_doc_ref.collection('health_history')
+            doc_ref = health_history_ref.document()
+            doc_ref.set({
+                'symptom': supplied_major_issue.title(),
+                'source': 'chat_session_manual_confirm',
+                'created_at': firestore.SERVER_TIMESTAMP
+            })
+            # Update chat session doc if provided
+            if session_id:
+                try:
+                    sess_ref = db.collection('users').document(uid).collection('chat_sessions').document(session_id)
+                    sess_ref.set({'major_issue': supplied_major_issue.title(), 'summary_excerpt': supplied_major_issue.title(), 'analyzed_at': firestore.SERVER_TIMESTAMP}, merge=True)
+                except Exception:
+                    pass
+            return jsonify({'success': True, 'major_issue': supplied_major_issue, 'saved': True, 'record_id': doc_ref.id, 'confidence': None, 'mode': 'manual_confirm'}), 200
+        except Exception as e:
+            return jsonify({'error': 'Failed to save record', 'details': str(e)}), 500
+
+    if not isinstance(messages, list) or not messages:
+        return jsonify({'error': 'Field "messages" (non-empty list) required unless using save-only with major_issue'}), 400
+
+    raw_texts = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = (m.get('role') or '').lower()
+        if role in ('user','doctor','physician'):
+            txt = (m.get('text') or '').strip()
+            if txt:
+                raw_texts.append(txt)
+    full_text = '\n'.join(raw_texts)
+    if not full_text:
+        return jsonify({'error': 'No analyzable user/doctor content'}), 400
+
+    # Token frequency
+    tokens = re.findall(r'[a-zA-Z]{3,}', full_text.lower())
+    STOP = {
+        'this','that','with','have','having','about','which','from','will','would','could','there','their','been','were','your','into','what','when','where','them','they','some','more','just','said','also','like','feel','feeling','felt','pain','pains','ache','aches','very','really','still','since','because','after','before','been','getting','going','over','under','around','mine','ours','yours','hers','his','its','okay','please','help','issue','problem','problems','doctor','need','want'
+    }
+    freq = {}
+    for t in tokens:
+        if t in STOP:
+            continue
+        freq[t] = freq.get(t, 0) + 1
+
+    # Try to match known response keywords (keys of responses json)
+    # Normalize response keys (e.g. "fever" or multi words) -> count presence
+    candidate_scores = {}
+    for key in responses.keys():
+        k_low = key.lower()
+        # simple exact token match OR substring presence
+        score = 0
+        if k_low in freq:
+            score += freq[k_low] * 3  # strong weight
+        # Boost if phrase words appear
+        parts = re.findall(r'[a-zA-Z]+', k_low)
+        overlap = sum(freq.get(p,0) for p in parts)
+        score += overlap
+        if score > 0:
+            candidate_scores[key] = score
+
+    major_issue = None
+    top_scores_sorted = []
+    if candidate_scores:
+        top_scores_sorted = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
+        major_issue = top_scores_sorted[0][0]
+    else:
+        if freq:
+            major_issue = max(freq.items(), key=lambda x: x[1])[0]
+
+    if not major_issue:
+        return jsonify({'error': 'Unable to extract major issue'}), 200
+
+    # Confidence calculation
+    confidence = None
+    major_score = candidate_scores.get(major_issue, None) if candidate_scores else None
+    if top_scores_sorted and len(top_scores_sorted) == 1:
+        confidence = 1.0
+    elif top_scores_sorted and len(top_scores_sorted) > 1:
+        s1 = float(top_scores_sorted[0][1])
+        s2 = float(top_scores_sorted[1][1])
+        confidence = round(s1 / (s1 + s2 + 1e-6), 4)  # conservative
+
+    # Evidence tokens: tokens contributing to major_issue + top frequency tokens
+    evidence_tokens = []
+    if candidate_scores and major_issue:
+        parts = re.findall(r'[a-zA-Z]+', major_issue.lower())
+        for p in parts:
+            if p in freq and p not in evidence_tokens:
+                evidence_tokens.append(p)
+    # add top freq tokens (up to 10) excluding already included
+    for t,_cnt in sorted(freq.items(), key=lambda x: x[1], reverse=True)[:10]:
+        if t not in evidence_tokens:
+            evidence_tokens.append(t)
+
+    saved = False
+    record_id = None
+    if save and db is not None:
+        try:
+            user_doc_ref = db.collection('users').document(uid)
+            health_history_ref = user_doc_ref.collection('health_history')
+            snippet = full_text[:240] + ('...' if len(full_text) > 240 else '')
+            doc_ref = health_history_ref.document()
+            doc_ref.set({
+                'symptom': major_issue.title(),
+                'source': 'chat_session_analysis',
+                'analysis_score': major_score,
+                'confidence': confidence,
+                'raw_token_count': len(tokens),
+                'summary_excerpt': snippet,
+                'evidence_tokens': evidence_tokens,
+                'created_at': firestore.SERVER_TIMESTAMP
+            })
+            saved = True
+            record_id = doc_ref.id
+            # Update chat session doc
+            if session_id:
+                try:
+                    sess_ref = user_doc_ref.collection('chat_sessions').document(session_id)
+                    sess_ref.set({
+                        'major_issue': major_issue.title(),
+                        'confidence': confidence,
+                        'analysis_score': major_score,
+                        'summary_excerpt': snippet,
+                        'evidence_tokens': evidence_tokens,
+                        'analyzed_at': firestore.SERVER_TIMESTAMP
+                    }, merge=True)
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.warning(f'Failed to save analyzed issue: {e}')
+
+    return jsonify({
+        'success': True,
+        'major_issue': major_issue,
+        'major_issue_score': major_score,
+        'confidence': confidence,
+        'candidate_scores_top': top_scores_sorted[:5],
+        'evidence_tokens': evidence_tokens,
+        'saved': saved,
+        'record_id': record_id,
+        'mode': 'analysis'
+    }), 200
 
 # ---------------- Health Record Endpoints ----------------
 @app.route('/add_health_record', methods=['POST'])
@@ -417,6 +714,51 @@ def get_health_history():
         # Generic error per specification (avoid leaking internal details)
         return jsonify({'error': 'Failed to fetch health history'}), 500
 
+@app.route('/delete_health_record', methods=['POST'])
+def delete_health_record():
+    """Delete a health history record.
+    Expects JSON: { "uid": "..", "id": "recordDocId" }
+    """
+    if db is None:
+        return jsonify({'error': 'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    rec_id = data.get('id')
+    if not uid or not rec_id:
+        return jsonify({'error': 'Fields "uid" and "id" are required'}), 400
+    try:
+        ref = db.collection('users').document(uid).collection('health_history').document(rec_id)
+        if not ref.get().exists:
+            return jsonify({'error': 'Record not found'}), 404
+        ref.delete()
+        return jsonify({'success': True, 'message': 'Record deleted'}), 200
+    except Exception as e:
+        return jsonify({'error': 'Failed to delete record', 'details': str(e)}), 500
+
+@app.route('/update_health_record', methods=['POST'])
+def update_health_record():
+    """Update specific fields of a health history record.
+    Expects JSON: { "uid": "..", "id": "recordDocId", "updates": { ... } }
+    """
+    if db is None:
+        return jsonify({'error': 'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    rec_id = data.get('id')
+    updates = data.get('updates') or {}
+    if not uid or not rec_id:
+        return jsonify({'error': 'Fields "uid" and "id" are required'}), 400
+    if not isinstance(updates, dict) or not updates:
+        return jsonify({'error': 'Field "updates" (non-empty object) is required'}), 400
+    try:
+        ref = db.collection('users').document(uid).collection('health_history').document(rec_id)
+        if not ref.get().exists:
+            return jsonify({'error': 'Record not found'}), 404
+        ref.set(updates, merge=True)
+        return jsonify({'success': True, 'message': 'Record updated'}), 200
+    except Exception as e:
+        return jsonify({'error': 'Failed to update record', 'details': str(e)}), 500
+
 @app.route('/schedule_appointment', methods=['POST'])
 def schedule_appointment():
     """Schedule a new appointment for a user.
@@ -439,11 +781,28 @@ def schedule_appointment():
     if not isinstance(appointment, dict) or not appointment:
         return jsonify({'error': 'Field "appointment" (non-empty object) is required in JSON body'}), 400
 
+    # Accept specialty-based scheduling: if doctor_name missing but speciality provided, auto assign.
+    doctor_name = appointment.get('doctor_name') or appointment.get('doctor')
+    specialty = appointment.get('speciality') or appointment.get('specialty') or appointment.get('specialization')
+    auto_assigned = False
+    if not doctor_name:
+        # Attempt assignment
+        assigned, resolved_key = assign_doctor_for_specialty(specialty)
+        appointment['doctor_name'] = assigned
+        appointment['speciality'] = resolved_key  # normalize spelling
+        auto_assigned = True
+    else:
+        # Normalize possible speciality misspelling
+        if specialty and 'speciality' not in appointment:
+            appointment['speciality'] = specialty
+
     try:
         user_doc_ref = db.collection('users').document(uid)
         appointments_ref = user_doc_ref.collection('appointments')
         appointment.setdefault('created_at', firestore.SERVER_TIMESTAMP)
         new_doc_ref = appointments_ref.document()
+        if auto_assigned:
+            appointment['auto_assigned'] = True
         new_doc_ref.set(appointment)
         return jsonify({
             'success': True,
@@ -479,6 +838,140 @@ def get_appointments():
         return jsonify({'success': True, 'count': len(appointments), 'appointments': appointments}), 200
     except Exception:
         return jsonify({'error': 'Failed to fetch appointments'}), 500
+
+@app.route('/doctor_appointments', methods=['POST'])
+def doctor_appointments():
+    """Retrieve appointments for a doctor (by UID -> resolves doctor name if role=doctor, else by provided doctor_name).
+    JSON: { "uid": "..." } OR { "doctor_name": "Dr. ..." }
+    If user is doctor, matches their name across patient bookings (auto-assigned). This simplistic implementation
+    assumes the doctor's full name appears exactly as assigned in appointments.
+    """
+    if db is None:
+        return jsonify({'error': 'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    explicit_doctor_name = data.get('doctor_name')
+    doctor_name = None
+    # Resolve doctor_name from user profile if uid provided
+    if uid:
+        try:
+            doc = db.collection('users').document(uid).get()
+            if doc.exists:
+                d = doc.to_dict() or {}
+                if d.get('role') == 'doctor':
+                    # For demo: store a display_name or fallback to email prefix
+                    doctor_name = d.get('display_name') or d.get('name')
+                    if not doctor_name:
+                        email = d.get('email','')
+                        doctor_name = 'Dr. ' + email.split('@')[0].replace('.', ' ').title()
+        except Exception:
+            pass
+    if explicit_doctor_name:
+        doctor_name = explicit_doctor_name
+    if not doctor_name:
+        return jsonify({'error': 'Doctor name not resolved'}), 400
+    # Query all users appointments scanning (inefficient for production but fine for prototype)
+    try:
+        users_ref = db.collection('users').stream()
+        matched = []
+        for u in users_ref:
+            try:
+                appts = db.collection('users').document(u.id).collection('appointments').stream()
+                for a in appts:
+                    rec = a.to_dict() or {}
+                    if (rec.get('doctor_name') or '').lower() == doctor_name.lower():
+                        rec['id'] = a.id
+                        rec['patient_uid'] = u.id
+                        matched.append(rec)
+            except Exception:
+                continue
+        matched.sort(key=lambda x: (x.get('date') or '', x.get('time_slot') or ''))
+        return jsonify({'success': True, 'count': len(matched), 'appointments': matched, 'doctor_name': doctor_name}), 200
+    except Exception:
+        return jsonify({'error': 'Failed to gather doctor appointments'}), 500
+
+# --------- Admin Doctor Verification Endpoints (Prototype - no auth) ---------
+@app.route('/admin/list_pending_doctors', methods=['GET'])
+def list_pending_doctors():
+    if db is None:
+        return jsonify({'error': 'Firestore not initialized'}), 500
+    try:
+        docs = db.collection('doctors').where('status','==','pending').stream()
+        pending = []
+        for d in docs:
+            item = d.to_dict() or {}
+            item['uid'] = d.id
+            pending.append(item)
+        return jsonify({'success': True, 'count': len(pending), 'pending': pending}), 200
+    except Exception as e:
+        return jsonify({'error': 'Failed to list pending', 'details': str(e)}), 500
+
+@app.route('/admin/verify_doctor', methods=['POST'])
+def verify_doctor():
+    if db is None:
+        return jsonify({'error': 'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    action = (data.get('action') or '').lower()  # approve or reject
+    if not uid or action not in ('approve','reject'):
+        return jsonify({'error': 'Fields "uid" and action (approve/reject) required'}), 400
+    try:
+        user_ref = db.collection('users').document(uid)
+        doc_ref = db.collection('doctors').document(uid)
+        user_doc = user_ref.get()
+        if not user_doc.exists:
+            return jsonify({'error': 'User not found'}), 404
+        status_value = 'active' if action=='approve' else 'rejected'
+        user_ref.set({'role_status': status_value}, merge=True)
+        doc_ref.set({'status': 'approved' if action=='approve' else 'rejected', 'verified_at': firestore.SERVER_TIMESTAMP}, merge=True)
+        return jsonify({'success': True, 'uid': uid, 'newStatus': status_value}), 200
+    except Exception as e:
+        return jsonify({'error': 'Verification failed', 'details': str(e)}), 500
+
+@app.route('/delete_appointment', methods=['POST'])
+def delete_appointment():
+    """Delete an appointment.
+    Expects JSON: { "uid": "..", "id": "appointmentDocId" }
+    """
+    if db is None:
+        return jsonify({'error': 'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    appt_id = data.get('id')
+    if not uid or not appt_id:
+        return jsonify({'error': 'Fields "uid" and "id" are required'}), 400
+    try:
+        ref = db.collection('users').document(uid).collection('appointments').document(appt_id)
+        if not ref.get().exists:
+            return jsonify({'error': 'Appointment not found'}), 404
+        ref.delete()
+        return jsonify({'success': True, 'message': 'Appointment deleted'}), 200
+    except Exception as e:
+        return jsonify({'error': 'Failed to delete appointment', 'details': str(e)}), 500
+
+@app.route('/update_appointment', methods=['POST'])
+def update_appointment():
+    """Update fields of an appointment.
+    Expects JSON: { "uid": "..", "id": "appointmentDocId", "updates": { ... } }
+    """
+    if db is None:
+        return jsonify({'error': 'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    appt_id = data.get('id')
+    updates = data.get('updates') or {}
+    if not uid or not appt_id:
+        return jsonify({'error': 'Fields "uid" and "id" are required'}), 400
+    if not isinstance(updates, dict) or not updates:
+        return jsonify({'error': 'Field "updates" (non-empty object) is required'}), 400
+    try:
+        ref = db.collection('users').document(uid).collection('appointments').document(appt_id)
+        if not ref.get().exists:
+            return jsonify({'error': 'Appointment not found'}), 404
+        ref.set(updates, merge=True)
+        return jsonify({'success': True, 'message': 'Appointment updated'}), 200
+    except Exception as e:
+        return jsonify({'error': 'Failed to update appointment', 'details': str(e)}), 500
 
 @app.route('/get_nearby_hospitals', methods=['POST'])
 def get_nearby_hospitals():
@@ -958,5 +1451,533 @@ def get_nearby_hospitals():
         logging.exception('Failed to fetch nearby hospitals')
         return jsonify({'error': 'Failed to fetch nearby hospitals'}), 500
 
+ # -------------------- Consult & Doctor-Patient Connection Endpoints --------------------
+
+@app.route('/request_consult', methods=['POST'])
+def request_consult():
+    """Patient escalates AI chat to request a doctor.
+    JSON: { uid: patient_uid, messages: [ {role,text}, ... ] }
+    Returns: { request_id }
+    """
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    msgs = data.get('messages') or []
+    if not uid:
+        return jsonify({'error':'uid required'}), 400
+    # Fetch patient basics
+    patient_email = None
+    patient_id = None
+    try:
+        udoc = db.collection('users').document(uid).get()
+        if udoc.exists:
+            udata = udoc.to_dict() or {}
+            patient_email = udata.get('email')
+            patient_id = udata.get('patient_id')
+    except Exception:
+        pass
+    # Build symptom summary from last few user messages
+    user_texts = []
+    for m in msgs[-10:]:
+        if isinstance(m, dict) and (m.get('role') in ('user','patient')):
+            txt = (m.get('text') or '').strip()
+            if txt:
+                user_texts.append(txt)
+    summary_source = ' | '.join(user_texts[-5:])[:300] if user_texts else 'No recent symptoms described.'
+    try:
+        ref = db.collection('consult_requests').document()
+        ref.set({
+            'patient_uid': uid,
+            'patient_email': patient_email,
+            'patient_id': patient_id,
+            'created_at': firestore.SERVER_TIMESTAMP,
+            'status': 'open',
+            'summary': summary_source,
+            'doctor_uid': None,
+            'doctor_name': None,
+            'accepted_at': None
+        })
+        return jsonify({'success': True, 'request_id': ref.id}), 201
+    except Exception as e:
+        return jsonify({'error':'Failed to create consult request','details':str(e)}), 500
+
+@app.route('/list_open_consults', methods=['POST'])
+def list_open_consults():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    doctor_uid = data.get('doctor_uid')
+    # Basic role check
+    if doctor_uid:
+        try:
+            ddoc = db.collection('users').document(doctor_uid).get()
+            if not ddoc.exists or (ddoc.to_dict() or {}).get('role') != 'doctor':
+                return jsonify({'error':'Not authorized'}), 403
+        except Exception:
+            return jsonify({'error':'Not authorized'}), 403
+    try:
+        items = []
+        query_ref = db.collection('consult_requests').where('status','==','open')
+        docs = query_ref.stream()
+        for d in docs:
+            rec = d.to_dict() or {}
+            # If doctor_uid present and doctor previously skipped, hide
+            if doctor_uid and doctor_uid in (rec.get('skipped_by') or []):
+                continue
+            rec['id'] = d.id
+            items.append(rec)
+        # Local sort newest first if created_at exists
+        def _ts(x):
+            ts = x.get('created_at') or x.get('accepted_at')
+            try:
+                if hasattr(ts, 'timestamp'):
+                    return ts.timestamp()
+            except Exception:
+                pass
+            return 0
+        items.sort(key=_ts, reverse=True)
+        return jsonify({'success': True, 'count': len(items), 'requests': items, 'ordered': False, 'degraded': True}), 200
+    except Exception as e:
+        logging.exception('list_open_consults failure')
+        # Graceful empty list fallback
+        return jsonify({'success': True, 'count': 0, 'requests': [], 'error_note': str(e)}), 200
+
+@app.route('/accept_consult', methods=['POST'])
+def accept_consult():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    doctor_uid = data.get('doctor_uid')
+    request_id = data.get('request_id')
+    if not doctor_uid or not request_id:
+        return jsonify({'error':'doctor_uid and request_id required'}), 400
+    # Validate doctor role
+    try:
+        ddoc = db.collection('users').document(doctor_uid).get()
+        if not ddoc.exists or (ddoc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error':'Not authorized'}), 403
+        doctor_profile = ddoc.to_dict() or {}
+    except Exception:
+        return jsonify({'error':'Not authorized'}), 403
+    try:
+        cref = db.collection('consult_requests').document(request_id)
+        snap = cref.get()
+        if not snap.exists:
+            return jsonify({'error':'Request not found'}), 404
+        data_req = snap.to_dict() or {}
+        if data_req.get('status') != 'open':
+            return jsonify({'error':'Already accepted'}), 409
+        doctor_name = doctor_profile.get('display_name') or doctor_profile.get('name')
+        if not doctor_name:
+            email = doctor_profile.get('email','')
+            doctor_name = 'Dr. ' + email.split('@')[0].replace('.',' ').title()
+        cref.set({'status':'accepted','doctor_uid':doctor_uid,'doctor_name':doctor_name,'accepted_at':firestore.SERVER_TIMESTAMP}, merge=True)
+        return jsonify({'success': True, 'request_id': request_id, 'doctor_name': doctor_name}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to accept','details':str(e)}), 500
+
+@app.route('/list_my_consults', methods=['POST'])
+def list_my_consults():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    doctor_uid = data.get('doctor_uid')
+    if not doctor_uid:
+        return jsonify({'error':'doctor_uid required'}), 400
+    try:
+        res = []
+        query_ref = db.collection('consult_requests').where('doctor_uid','==',doctor_uid)
+        docs = query_ref.stream()
+        for d in docs:
+            rec = d.to_dict() or {}
+            # Only include active chat consults (accepted)
+            if rec.get('status') != 'accepted':
+                continue
+            rec['id'] = d.id
+            res.append(rec)
+        def _ts(x):
+            ts = x.get('accepted_at') or x.get('created_at')
+            try:
+                if hasattr(ts,'timestamp'):
+                    return ts.timestamp()
+            except Exception:
+                pass
+            return 0
+        res.sort(key=_ts, reverse=True)
+        return jsonify({'success': True, 'count': len(res), 'consults': res, 'ordered': False, 'degraded': True}), 200
+    except Exception as e:
+        logging.exception('list_my_consults failure')
+        return jsonify({'success': True, 'count': 0, 'consults': [], 'error_note': str(e)}), 200
+
+@app.route('/reject_consult', methods=['POST'])
+def reject_consult():
+    """Doctor opts out from an open consult. It remains open for other doctors.
+    We record the doctor in a skipped_by array so it won't reappear for them."""
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    doctor_uid = data.get('doctor_uid')
+    request_id = data.get('request_id')
+    if not doctor_uid or not request_id:
+        return jsonify({'error':'doctor_uid and request_id required'}), 400
+    # Validate doctor
+    try:
+        ddoc = db.collection('users').document(doctor_uid).get()
+        if not ddoc.exists or (ddoc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error':'Not authorized'}), 403
+    except Exception:
+        return jsonify({'error':'Not authorized'}), 403
+    try:
+        cref = db.collection('consult_requests').document(request_id)
+        snap = cref.get()
+        if not snap.exists:
+            return jsonify({'error':'Request not found'}), 404
+        meta = snap.to_dict() or {}
+        if meta.get('status') != 'open':
+            return jsonify({'error':'Only open consults can be skipped'}), 409
+        skipped = set(meta.get('skipped_by') or [])
+        skipped.add(doctor_uid)
+        cref.set({'skipped_by': list(skipped), 'last_skipped_at': firestore.SERVER_TIMESTAMP}, merge=True)
+        return jsonify({'success': True, 'request_id': request_id, 'status':'open', 'skipped_by': list(skipped)}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to reject','details':str(e)}), 500
+
+@app.route('/close_consult', methods=['POST'])
+def close_consult():
+    """Doctor closes an active (accepted) consult; marks it done."""
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    doctor_uid = data.get('doctor_uid')
+    request_id = data.get('request_id')
+    if not doctor_uid or not request_id:
+        return jsonify({'error':'doctor_uid and request_id required'}), 400
+    try:
+        ddoc = db.collection('users').document(doctor_uid).get()
+        if not ddoc.exists or (ddoc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error':'Not authorized'}), 403
+    except Exception:
+        return jsonify({'error':'Not authorized'}), 403
+    try:
+        cref = db.collection('consult_requests').document(request_id)
+        snap = cref.get()
+        if not snap.exists:
+            return jsonify({'error':'Consult not found'}), 404
+        meta = snap.to_dict() or {}
+        if meta.get('status') != 'accepted':
+            return jsonify({'error':'Only accepted consults can be closed'}), 409
+        if meta.get('doctor_uid') != doctor_uid:
+            return jsonify({'error':'Not owner of consult'}), 403
+        cref.set({'status':'closed','closed_at':firestore.SERVER_TIMESTAMP}, merge=True)
+        return jsonify({'success': True, 'request_id': request_id, 'status':'closed'}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to close','details':str(e)}), 500
+
+@app.route('/get_consult_messages', methods=['POST'])
+def get_consult_messages():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    request_id = data.get('request_id')
+    if not request_id:
+        return jsonify({'error':'request_id required'}), 400
+    try:
+        cref = db.collection('consult_requests').document(request_id)
+        if not cref.get().exists:
+            return jsonify({'error':'Not found'}), 404
+        msgs = []
+        stream = cref.collection('messages').order_by('ts').stream()
+        for m in stream:
+            rec = m.to_dict() or {}
+            rec['id'] = m.id
+            msgs.append(rec)
+        meta = cref.get().to_dict() or {}
+        return jsonify({'success': True, 'messages': msgs, 'status': meta.get('status'), 'doctor_uid': meta.get('doctor_uid'), 'patient_uid': meta.get('patient_uid')}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to fetch messages','details':str(e)}), 500
+
+@app.route('/send_consult_message', methods=['POST'])
+def send_consult_message():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    request_id = data.get('request_id')
+    uid = data.get('uid')
+    role = (data.get('role') or '').lower()
+    text = (data.get('text') or '').strip()
+    if not all([request_id, uid, role, text]):
+        return jsonify({'error':'request_id, uid, role, text required'}), 400
+    if role not in ('doctor','patient'):
+        return jsonify({'error':'role must be doctor or patient'}), 400
+    try:
+        cref = db.collection('consult_requests').document(request_id)
+        snap = cref.get()
+        if not snap.exists:
+            return jsonify({'error':'Consult not found'}), 404
+        meta = snap.to_dict() or {}
+        if meta.get('status') != 'accepted':
+            return jsonify({'error':'Consult not active'}), 409
+        # Basic authorization: ensure uid matches doctor_uid or patient_uid
+        if uid not in (meta.get('doctor_uid'), meta.get('patient_uid')):
+            return jsonify({'error':'Not authorized for this consult'}), 403
+        msg_doc = cref.collection('messages').document()
+        payload = {
+            'uid': uid,
+            'role': role,
+            'text': text,
+            'ts': firestore.SERVER_TIMESTAMP,
+            'created_at': firestore.SERVER_TIMESTAMP
+        }
+        msg_doc.set(payload)
+        return jsonify({'success': True, 'message_id': msg_doc.id, 'echo': {'role': role, 'text': text}}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to send message','details':str(e)}), 500
+
+@app.route('/debug_consult', methods=['POST'])
+def debug_consult():
+    """Diagnostic helper: returns consult meta + message count (no auth - prototype). JSON {id:""}"""
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    cid = data.get('id')
+    if not cid:
+        return jsonify({'error':'id required'}), 400
+    try:
+        ref = db.collection('consult_requests').document(cid)
+        snap = ref.get()
+        if not snap.exists:
+            return jsonify({'error':'not found'}), 404
+        meta = snap.to_dict() or {}
+        msgs = list(ref.collection('messages').stream())
+        return jsonify({'success': True, 'meta': meta, 'message_count': len(msgs)}), 200
+    except Exception as e:
+        return jsonify({'error':'debug failure','details':str(e)}), 500
+
+@app.route('/search_patients', methods=['POST'])
+def search_patients():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    doctor_uid = data.get('doctor_uid')
+    query = (data.get('query') or '').strip().lower()
+    if not doctor_uid:
+        return jsonify({'error':'doctor_uid required'}), 400
+    # Validate doctor
+    try:
+        ddoc = db.collection('users').document(doctor_uid).get()
+        if not ddoc.exists or (ddoc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error':'Not authorized'}), 403
+    except Exception:
+        return jsonify({'error':'Not authorized'}), 403
+    try:
+        # Simple scan (prototype)
+        users_stream = db.collection('users').where('role','==','patient').stream()
+        results = []
+        for u in users_stream:
+            d = u.to_dict() or {}
+            pid = str(d.get('patient_id') or '')
+            email = (d.get('email') or '')
+            if not query or query in email.lower() or query == pid.lower():
+                results.append({'uid': u.id, 'email': email, 'patient_id': pid})
+            if len(results) >= 50:
+                break
+        return jsonify({'success': True, 'count': len(results), 'patients': results}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to search patients','details':str(e)}), 500
+
+@app.after_request
+def add_cors_headers(resp):
+    # Double-layer CORS safety in case Flask-CORS missed something
+    resp.headers.setdefault('Access-Control-Allow-Origin', '*')
+    resp.headers.setdefault('Access-Control-Allow-Credentials', 'true')
+    resp.headers.setdefault('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+    resp.headers.setdefault('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    return resp
+
+# Explicit OPTIONS handlers (some browsers/frameworks can be picky for non-simple POST endpoints)
+for _ep in [
+    '/request_consult','/list_open_consults','/accept_consult','/list_my_consults',
+    '/get_consult_messages','/send_consult_message','/search_patients','/get_patient_history',
+    '/get_patient_active_consult','/get_chat_session_messages','/list_chat_sessions'
+]:
+    app.add_url_rule(_ep, methods=['OPTIONS'], endpoint=f'options_{_ep.strip("/")}', view_func=lambda: ('',204))
+
+# Add OPTIONS for new endpoints
+for _ep in ['/reject_consult','/close_consult']:
+    app.add_url_rule(_ep, methods=['OPTIONS'], endpoint=f'options_{_ep.strip("/")}', view_func=lambda: ('',204))
+
+
+@app.route('/get_patient_history', methods=['POST'])
+def get_patient_history():
+    """Doctor-scoped patient history: returns health records and chat session summaries.
+    JSON: { doctor_uid: '', patient_uid: '' } OR { doctor_uid:'', patient_id:'123456' }
+    """
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    doctor_uid = data.get('doctor_uid')
+    patient_uid = data.get('patient_uid')
+    patient_id = data.get('patient_id')
+    if not doctor_uid:
+        return jsonify({'error':'doctor_uid required'}), 400
+    # Validate doctor
+    try:
+        ddoc = db.collection('users').document(doctor_uid).get()
+        if not ddoc.exists or (ddoc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error':'Not authorized'}), 403
+    except Exception:
+        return jsonify({'error':'Not authorized'}), 403
+    # Resolve patient uid by patient_id if necessary
+    if not patient_uid and patient_id:
+        try:
+            q = db.collection('users').where('patient_id','==',str(patient_id)).limit(1).stream()
+            for doc in q:
+                patient_uid = doc.id
+                break
+        except Exception:
+            pass
+    if not patient_uid:
+        return jsonify({'error':'patient not found'}), 404
+    try:
+        user_ref = db.collection('users').document(patient_uid)
+        user_doc = user_ref.get()
+        if not user_doc.exists:
+            return jsonify({'error':'patient not found'}), 404
+        profile = user_doc.to_dict() or {}
+        # Health history
+        history = []
+        try:
+            for h in user_ref.collection('health_history').order_by('created_at', direction=firestore.Query.DESCENDING).limit(100).stream():
+                rec = h.to_dict() or {}
+                rec['id'] = h.id
+                history.append(rec)
+        except Exception:
+            pass
+        # Chat sessions summaries
+        sessions = []
+        try:
+            for s in user_ref.collection('chat_sessions').order_by('last_updated', direction=firestore.Query.DESCENDING).limit(50).stream():
+                sd = s.to_dict() or {}
+                sd['id'] = s.id
+                # Fetch a small snippet from first 2 messages
+                snippet = None
+                try:
+                    msgs_stream = s.reference.collection('messages').order_by('ts').limit(2).stream()
+                    parts = []
+                    for m in msgs_stream:
+                        md = m.to_dict() or {}
+                        parts.append((md.get('role') or '') + ': ' + (md.get('text') or '')[:120])
+                    if parts:
+                        snippet = ' | '.join(parts)[:240]
+                except Exception:
+                    pass
+                if snippet and not sd.get('summary_excerpt'):
+                    sd['summary_excerpt'] = snippet
+                sessions.append(sd)
+        except Exception:
+            pass
+        return jsonify({'success': True, 'patient_uid': patient_uid, 'patient_id': profile.get('patient_id'), 'email': profile.get('email'), 'health_history': history, 'chat_sessions': sessions}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to fetch patient history','details':str(e)}), 500
+
+# -------------------- Patient Chat / Session Retrieval --------------------
+@app.route('/list_chat_sessions', methods=['POST'])
+def list_chat_sessions():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    limit = int(data.get('limit') or 20)
+    if not uid:
+        return jsonify({'error':'uid required'}), 400
+    try:
+        ref = db.collection('users').document(uid).collection('chat_sessions')
+        # We may not have indexes; stream all then sort in memory capped to 100
+        sessions = []
+        for s in ref.stream():
+            d = s.to_dict() or {}
+            d['id'] = s.id
+            sessions.append(d)
+        def _ts(x):
+            ts = x.get('last_updated') or x.get('created_at')
+            try:
+                if hasattr(ts,'timestamp'): return ts.timestamp()
+            except Exception: pass
+            return 0
+        sessions.sort(key=_ts, reverse=True)
+        sessions = sessions[:limit]
+        return jsonify({'success': True, 'count': len(sessions), 'sessions': sessions}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to list chat sessions','details':str(e)}), 500
+
+@app.route('/get_chat_session_messages', methods=['POST'])
+def get_chat_session_messages():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    session_id = data.get('session_id')
+    if not uid or not session_id:
+        return jsonify({'error':'uid and session_id required'}), 400
+    try:
+        sess_ref = db.collection('users').document(uid).collection('chat_sessions').document(session_id)
+        if not sess_ref.get().exists:
+            return jsonify({'error':'session not found'}), 404
+        msgs = []
+        for m in sess_ref.collection('messages').order_by('ts').stream():
+            md = m.to_dict() or {}
+            md['id'] = m.id
+            msgs.append(md)
+        meta = sess_ref.get().to_dict() or {}
+        return jsonify({'success': True, 'messages': msgs, 'meta': meta}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to fetch session messages','details':str(e)}), 500
+
+@app.route('/get_patient_active_consult', methods=['POST'])
+def get_patient_active_consult():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    if not uid:
+        return jsonify({'error':'uid required'}), 400
+    try:
+        q = db.collection('consult_requests').where('patient_uid','==',uid).stream()
+        found = []
+        for c in q:
+            d = c.to_dict() or {}
+            st = d.get('status')
+            if st in ('open','accepted'):
+                d['id'] = c.id
+                found.append(d)
+        # sort newest
+        def _ts(x):
+            ts = x.get('accepted_at') or x.get('created_at')
+            try:
+                if hasattr(ts,'timestamp'): return ts.timestamp()
+            except Exception: pass
+            return 0
+        found.sort(key=_ts, reverse=True)
+        if not found:
+            return jsonify({'success': True, 'active': None}), 200
+        active = found[0]
+        # include limited messages if accepted
+        messages = []
+        if active.get('status')=='accepted':
+            try:
+                ref = db.collection('consult_requests').document(active['id']).collection('messages')
+                for m in ref.order_by('ts').limit(50).stream():
+                    md = m.to_dict() or {}
+                    md['id'] = m.id
+                    messages.append(md)
+            except Exception:
+                pass
+        return jsonify({'success': True, 'active': active, 'messages': messages}), 200
+    except Exception as e:
+        return jsonify({'error':'Failed to fetch active consult','details':str(e)}), 500
+
 if __name__ == '__main__':
+    # Ensure all routes are registered before starting the development server
+    # (Moved to end so newly added routes below previous position are active.)
     app.run(port=5000, debug=True)
