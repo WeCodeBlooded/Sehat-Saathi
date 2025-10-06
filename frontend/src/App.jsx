@@ -16,14 +16,71 @@ const FEATURE_SETS = {
 	doctor: {
 		doctor_dashboard: { label: 'Doctor Dashboard', icon: '🩺' },
 		my_consults: { label: 'My Consults', icon: '💻' },
-		chatbot: { label: 'Chatbot', icon: '💬' },
-		hospitals: { label: 'Locator', icon: '🗺️' }
+		hospitals: { label: 'Locator', icon: '🗺️' },
+		patient_overview: { label: 'Patients Health', icon: '📂' }
 	}
 };
+function PatientHistoryOverview({ backend, uid, role, notify }) {
+	const [query, setQuery] = useState('');
+	const [loading, setLoading] = useState(false);
+	const [patients, setPatients] = useState([]);
+	const [expanded, setExpanded] = useState(null);
+	const load = async () => {
+		setLoading(true);
+		try {
+			const res = await fetch(`${backend}/patient_history_overview`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ doctor_uid: uid, query }) });
+			const data = await res.json();
+			if (!res.ok) throw new Error(data.error || 'Load failed');
+			setPatients(data.patients||[]);
+		} catch(e) { notify && notify(e.message,'error'); }
+		finally { setLoading(false); }
+	};
+	useEffect(()=>{ if (role==='doctor') load(); }, []); // auto load for doctors
+	const search = () => load();
+	return (
+		<div className="feature-card">
+			<h2>Patients Health Overview</h2>
+			<div className="row" style={{gap:8, marginBottom:10}}>
+				<input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search by ID, name or email" onKeyDown={e=>{if(e.key==='Enter') search();}} />
+				<button className="secondary" onClick={search} disabled={loading}>{loading? '...' : 'Search'}</button>
+			</div>
+			<div className="list" style={{maxHeight: role==='doctor'? 420: 320, overflow:'auto'}}>
+				{loading && <div className="skeleton-list">{Array.from({length:4}).map((_,i)=><div key={i} className="skeleton line" />)}</div>}
+				{!loading && patients.length===0 && <div className="empty">No patients match.</div>}
+				{patients.map(p => (
+					<div key={p.uid} className="list-item" style={{flexDirection:'column',alignItems:'stretch'}}>
+						<div className="row" style={{justifyContent:'space-between',width:'100%'}}>
+							<div style={{display:'flex',gap:16,fontSize:'.7rem',fontFamily:'monospace'}}>
+								<span>{p.patient_id || '—'}</span>
+								<span>{p.display_name || 'Unnamed'}</span>
+								<span>{p.email}</span>
+							</div>
+							<button className="ghost small" onClick={()=> setExpanded(expanded===p.uid? null : p.uid)}>{expanded===p.uid? 'Hide' : 'View'}</button>
+						</div>
+						{expanded===p.uid && (
+							<div className="stack gap-s" style={{marginTop:8}}>
+								{p.history.length===0 && <div className="empty" style={{fontSize:'.6rem'}}>No recent records.</div>}
+								{p.history.map(h => (
+									<div key={h.id} className="mini-card" style={{fontSize:'.6rem'}}>
+										<strong>{h.symptom || h.diagnosis || 'Record'}</strong>
+										{h.summary_excerpt && <div className="excerpt">{h.summary_excerpt}</div>}
+										{h.doctor_notes && <div className="notes">Notes: {h.doctor_notes}</div>}
+									</div>
+								))}
+							</div>
+						)}
+					</div>
+				))}
+			</div>
+			<p className="hint" style={{marginTop:8}}>{patients.length} patient(s) listed.</p>
+		</div>
+	);
+}
 function MyConsults({ backend, uid, notify }) {
 	const [consults, setConsults] = useState([]);
 	const [activeId, setActiveId] = useState(() => localStorage.getItem('lastAcceptedConsult') || null);
 	const [messages, setMessages] = useState([]);
+	const [attachments, setAttachments] = useState([]);
 	const [input, setInput] = useState('');
 	const [loading, setLoading] = useState(true);
 	const [msgLoading, setMsgLoading] = useState(false); // only used for initial load / switch
@@ -58,6 +115,7 @@ function MyConsults({ backend, uid, notify }) {
 			const data = await res.json();
 			if (!res.ok) throw new Error(data.error || 'Failed messages');
 			setMessages(data.messages||[]);
+			setAttachments(data.attachments||[]);
 			setInitialMsgLoaded(true);
 		} catch (e) { /* swallow errors during background refresh */ }
 		finally { if (!silent) setMsgLoading(false); }
@@ -87,6 +145,19 @@ function MyConsults({ backend, uid, notify }) {
 			// Reload full list to replace temp with stored ordering
 			loadMessages(activeId);
 		} catch (e) { notify && notify(e.message,'error'); }
+	};
+
+	const downloadAttachment = async (file) => {
+		try {
+			const resp = await fetch(`${backend}/get_consult_attachment`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ consult_id: activeId, filename: file.filename }) });
+			const data = await resp.json();
+			if (!resp.ok) throw new Error(data.error || 'Download failed');
+			const bin = atob(data.content_base64);
+			const bytes = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+			const blob = new Blob([bytes]);
+			const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.filename; a.click();
+			setTimeout(()=> URL.revokeObjectURL(a.href), 4000);
+		} catch(e) { notify && notify(e.message,'error'); }
 	};
 
 	const closeConsult = async () => {
@@ -138,6 +209,13 @@ function MyConsults({ backend, uid, notify }) {
 									<div key={m.id} className={`bubble ${m.role==='doctor'? 'user':'bot'}`}>{m.text}</div>
 								))}
 								{msgLoading && !initialMsgLoaded && <div className="bubble bot loading">Loading…</div>}
+								{attachments.length>0 && (
+									<div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+										{attachments.map(f => (
+											<button type="button" key={f.filename} className="chip" style={{fontSize:'.55rem'}} onClick={()=>downloadAttachment(f)}>📎 {f.filename} ({Math.round((f.size||0)/1024)}kB)</button>
+										))}
+									</div>
+								)}
 							</div>
 							<div className="chat-input-row" style={{marginTop:8}}>
 								<input value={input} onChange={e=>setInput(e.target.value)} placeholder="Type a message" onKeyDown={e=>{if(e.key==='Enter'){send();}}} />
@@ -336,6 +414,14 @@ export default function App() {
 	const [role, setRole] = useState(localStorage.getItem('role') || 'patient');
 	const [roleStatus, setRoleStatus] = useState(localStorage.getItem('roleStatus') || 'active');
 	const [patientId, setPatientId] = useState(localStorage.getItem('patientId') || '');
+	const [displayName, setDisplayName] = useState(localStorage.getItem('displayName') || '');
+	const [mobile, setMobile] = useState(localStorage.getItem('mobile') || '');
+	const [profileOpen, setProfileOpen] = useState(false);
+	const [profileLoading, setProfileLoading] = useState(false);
+	const [editingProfile, setEditingProfile] = useState(false);
+	const [editName, setEditName] = useState('');
+	const [editMobile, setEditMobile] = useState('');
+	const [profileSaving, setProfileSaving] = useState(false);
 		const [dark, setDark] = useState(() => {
 			const stored = localStorage.getItem('theme');
 			if (stored) return stored === 'dark';
@@ -356,6 +442,8 @@ export default function App() {
 
 	const handleAuth = useCallback((info) => {
 		if (info?.uid) {
+			// Start a fresh chat session every login
+			localStorage.removeItem('activeChatSession');
 			setUid(info.uid);
 			if (info.email) setEmail(info.email);
 			localStorage.setItem('uid', info.uid);
@@ -363,6 +451,8 @@ export default function App() {
 			if (info.role) { setRole(info.role); localStorage.setItem('role', info.role); }
 			if (info.roleStatus) { setRoleStatus(info.roleStatus); localStorage.setItem('roleStatus', info.roleStatus); }
 			if (info.patientId) { setPatientId(info.patientId); localStorage.setItem('patientId', info.patientId); }
+			if (info.displayName) { setDisplayName(info.displayName); localStorage.setItem('displayName', info.displayName); }
+			if (info.mobile) { setMobile(info.mobile); localStorage.setItem('mobile', info.mobile); }
 		}
 	}, []);
 
@@ -371,12 +461,37 @@ export default function App() {
 		localStorage.removeItem('email');
 		localStorage.removeItem('role');
 		localStorage.removeItem('patientId');
+		localStorage.removeItem('displayName');
+		localStorage.removeItem('mobile');
 		setUid('');
 		setEmail('');
 		setRole('patient');
 		setRoleStatus('active');
 		setPatientId('');
+		setDisplayName('');
+		setMobile('');
 	};
+
+	// Fetch profile after login to ensure we have latest details
+	useEffect(() => {
+		if (!uid) return;
+		let cancelled = false;
+		(async () => {
+			try {
+				setProfileLoading(true);
+				const res = await fetch(`${BACKEND_URL}/get_profile`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ uid }) });
+				const data = await res.json();
+				if (!res.ok) throw new Error(data.error || 'Profile fetch failed');
+				if (cancelled) return;
+				if (data.display_name) { setDisplayName(data.display_name); localStorage.setItem('displayName', data.display_name); }
+				if (data.patient_id) { setPatientId(data.patient_id); localStorage.setItem('patientId', data.patient_id); }
+				if (data.mobile) { setMobile(data.mobile); localStorage.setItem('mobile', data.mobile); }
+			} catch (e) {
+				// silent fail for now
+			} finally { setProfileLoading(false); }
+		})();
+		return () => { cancelled = true; };
+	}, [uid]);
 
 		useEffect(() => {
 			document.documentElement.dataset.theme = dark ? 'dark' : 'light';
@@ -418,6 +533,8 @@ export default function App() {
 				return <HospitalLocator backend={BACKEND_URL} uid={uid} notify={pushToast} />;
 			case 'history':
 				return <HealthHistory backend={BACKEND_URL} uid={uid} notify={pushToast} />;
+			case 'patient_overview':
+				return <PatientHistoryOverview backend={BACKEND_URL} uid={uid} role={role} notify={pushToast} />;
 			default:
 				return null;
 		}
@@ -459,12 +576,53 @@ export default function App() {
 				<header className="topbar">
 					<div className="breadcrumbs">{(FEATURE_SETS[role] || FEATURE_SETS.patient)[active]?.label}</div>
 					<div className="user-info">
-						{uid ? <span className="uid-chip" title={uid}>{(role==='doctor'?'Dr ':'') + (email || 'User')}{role==='patient' && patientId? ` • ID ${patientId}`:''}</span> : null}
+						{uid ? (
+							<button className="uid-chip" title="View profile" onClick={()=> setProfileOpen(true)}>
+								{(role==='doctor'? 'Dr ' : '') + (displayName || email || 'User')}{role==='patient' && patientId? ` • ID ${patientId}`:''}
+							</button>
+						) : null}
 					</div>
 				</header>
 				<div className="feature-area">
 					{renderFeature()}
 				</div>
+				{profileOpen && uid && (
+					<div className="modal-overlay" onClick={()=> { if(!profileSaving){ setProfileOpen(false); setEditingProfile(false);} }}>
+						<div className="modal" onClick={e=>e.stopPropagation()}>
+							<h3>Your Profile</h3>
+							<div className="stack gap-s" style={{minWidth:300}}>
+								{!editingProfile && <div><strong>Name: </strong>{displayName || <em style={{opacity:.6}}>Not set</em>}</div>}
+								{editingProfile && <input type="text" value={editName} onChange={e=>setEditName(e.target.value)} placeholder="Full Name" />}
+								<div><strong>Email: </strong>{email}</div>
+								{patientId && <div><strong>Patient ID: </strong>{patientId}</div>}
+								{!editingProfile && mobile && <div><strong>Mobile: </strong>{mobile}</div>}
+								{editingProfile && <input type="tel" value={editMobile} onChange={e=>setEditMobile(e.target.value)} placeholder="Mobile" />}
+								<div><strong>Role: </strong>{role} {role==='doctor' && <span style={{fontSize:'.65rem',opacity:.7}}>({roleStatus})</span>}</div>
+								{profileLoading && <div style={{fontSize:'.65rem',opacity:.7}}>Refreshing…</div>}
+								{profileSaving && <div style={{fontSize:'.6rem',color:'var(--accent)',opacity:.8}}>Saving…</div>}
+							</div>
+							<div className="row" style={{justifyContent:'space-between',marginTop:16}}>
+								{!editingProfile && <button className="secondary" onClick={()=> { setEditingProfile(true); setEditName(displayName); setEditMobile(mobile); }}>Edit</button>}
+								{editingProfile && (
+									<button className="primary" disabled={profileSaving || !editName.trim() || !editMobile.trim()} onClick={async ()=>{
+										setProfileSaving(true);
+										try {
+											const res = await fetch(`${BACKEND_URL}/update_profile`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ uid, display_name: editName.trim(), mobile: editMobile.trim() }) });
+											const data = await res.json();
+											if (!res.ok) throw new Error(data.error || 'Update failed');
+											setDisplayName(data.display_name || editName.trim()); localStorage.setItem('displayName', data.display_name || editName.trim());
+											setMobile(data.mobile || editMobile.trim()); localStorage.setItem('mobile', data.mobile || editMobile.trim());
+											setEditingProfile(false);
+										} catch (e) { alert(e.message); }
+										finally { setProfileSaving(false); }
+									}}>Save</button>
+								)}
+								{editingProfile && <button className="ghost" disabled={profileSaving} onClick={()=> { setEditingProfile(false); }}>Cancel</button>}
+								<button className="secondary" disabled={profileSaving} onClick={()=> { setProfileOpen(false); setEditingProfile(false); }}>Close</button>
+							</div>
+						</div>
+					</div>
+				)}
 						<div className="toast-layer">
 							{toasts.map(t => (
 								<div key={t.id} className={`toast ${t.type}`} onClick={()=>removeToast(t.id)}>{t.msg}</div>

@@ -15,6 +15,9 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
   const [consultLoading, setConsultLoading] = useState(false);
   const [consultStatus, setConsultStatus] = useState(null); // open | accepted
   const [consultMessages, setConsultMessages] = useState([]);
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentFile, setAttachmentFile] = useState(null);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const consultPollRef = useRef(null);
   const [consultMsgInput, setConsultMsgInput] = useState('');
   const bottomRef = useRef(null);
@@ -24,6 +27,8 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [loadingSessionSwitch, setLoadingSessionSwitch] = useState(false);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const send = async (e) => {
     e.preventDefault();
@@ -56,7 +61,7 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
     if (messages.length === 0) return;
     setAnalyzing(true); setPendingIssue(null); setSessionIssue(null);
     try {
-  const payload = { uid, messages: messages.map(m => ({ role: m.role, text: m.text })), save: false, session_id: sessionId };
+  const payload = { uid, messages: messages.map(m => ({ role: m.role, text: typeof m.text === 'string' ? m.text.replace(/<[^>]+>/g,' ') : '' })), save: false, session_id: sessionId };
       const res = await fetch(`${backend}/analyze_chat_session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Analysis failed');
@@ -115,6 +120,25 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
     setPendingIssue(null); setPendingMeta(null);
     notify && notify('New session started','info');
   };
+
+  const beginRename = (s) => {
+    setRenamingId(s.id);
+    setRenameValue(s.title || '');
+  };
+  const submitRename = async (s) => {
+    // Submit rename to backend; optimistic update after success
+    if (!renameValue.trim()) { setRenamingId(null); return; }
+    try {
+      const res = await fetch(`${backend}/rename_chat_session`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ uid, session_id: s.id, title: renameValue.trim() }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Rename failed');
+      setSessions(sess => sess.map(x => x.id===s.id ? { ...x, title: data.title, title_auto: false } : x));
+      if (sessionId === s.id) {
+        // update current session title locally
+      }
+      setRenamingId(null);
+    } catch(e) { notify && notify(e.message,'error'); }
+  };
   const escalateToDoctor = async () => {
       if (role !== 'patient' || consultRequestId || messages.length===0) return;
       setConsultLoading(true);
@@ -141,6 +165,12 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
       if (!res.ok) throw new Error(data.error || 'Fetch failed');
       setConsultStatus(data.status);
       setConsultMessages(data.messages||[]);
+      // Also fetch attachments
+      try {
+        const ar = await fetch(`${backend}/list_consult_attachments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ consult_id: rid }) });
+        const ad = await ar.json();
+        if (ar.ok && ad.files) setAttachments(ad.files);
+      } catch(e) {/* ignore */}
     } catch (e) {
       // silently ignore to avoid toast spam
     }
@@ -176,6 +206,40 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
     }
   };
 
+  const uploadAttachment = async () => {
+    if (!consultRequestId || consultStatus !== 'accepted' || !attachmentFile) return;
+    const f = attachmentFile;
+    if (f.size > 2*1024*1024) { notify && notify('File too large (max 2MB)','error'); return; }
+    setUploadingAttachment(true);
+    try {
+      const toBase64 = (file) => new Promise((res,rej)=>{ const r = new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file); });
+      const b64 = await toBase64(f);
+      const payload = { consult_id: consultRequestId, uid, role: 'patient', filename: f.name, content_base64: b64 };
+      const resp = await fetch(`${backend}/upload_consult_attachment`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Upload failed');
+      notify && notify('File uploaded','success');
+      setAttachmentFile(null);
+      // refresh list
+      const ar = await fetch(`${backend}/list_consult_attachments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ consult_id: consultRequestId }) });
+      const ad = await ar.json(); if (ar.ok && ad.files) setAttachments(ad.files);
+    } catch(e) { notify && notify(e.message,'error'); }
+    finally { setUploadingAttachment(false); }
+  };
+
+  const downloadAttachment = async (file) => {
+    try {
+      const resp = await fetch(`${backend}/get_consult_attachment`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ consult_id: consultRequestId, filename: file.filename }) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Download failed');
+      const bin = atob(data.content_base64);
+      const bytes = new Uint8Array(bin.length); for (let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+      const blob = new Blob([bytes]);
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.filename; a.click();
+      setTimeout(()=> URL.revokeObjectURL(a.href), 4000);
+    } catch(e) { notify && notify(e.message,'error'); }
+  };
+
   const confirmSave = async () => {
     if (!pendingIssue) return;
     try {
@@ -204,7 +268,32 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
     });
   };
 
+  const looksLikeHtml = (str) => /<\s*(p|div|ul|li|strong|em|br)\b/i.test(str || '');
+  const sanitizeHtml = (html) => {
+    if (!html) return '';
+    // Strip script/style and inline event handlers (very lightweight; backend is trusted)
+    let safe = html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi,'')
+                   .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi,'')
+                   .replace(/ on[a-zA-Z]+="[^"]*"/g,'')
+                   .replace(/ on[a-zA-Z]+='[^']*'/g,'');
+    return safe;
+  };
+
   useEffect(()=>{ bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  // If user logs out then logs back in (uid change), force a new session regardless of stored value
+  const prevUidRef = useRef(uid);
+  useEffect(()=>{
+    if (prevUidRef.current !== uid) {
+      prevUidRef.current = uid;
+      // new login: clear session & messages
+      setSessionId(null);
+      setMessages([]);
+      localStorage.removeItem('activeChatSession');
+      setSessionIssue(null); setSessionConfidence(null); setSessionEvidence([]);
+      setPendingIssue(null); setPendingMeta(null);
+    }
+  }, [uid]);
 
   // Restore active session messages & active consult on mount
   useEffect(()=>{
@@ -258,23 +347,49 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
         </div>
       )}
       {showSessions && role==='patient' && (
-        <div className="session-list" style={{maxHeight:160,overflow:'auto',marginBottom:8,border:'1px solid var(--border)',borderRadius:6,padding:6,display:'flex',flexDirection:'column',gap:4}}>
-          {sessionsLoading && <div className="skeleton-list">{Array.from({length:3}).map((_,i)=><div className="skeleton line" key={i} />)}</div>}
-          {!sessionsLoading && sessions.length===0 && <div className="empty" style={{fontSize:'.65rem'}}>No previous sessions.</div>}
-          {sessions.map(s => (
-            <button key={s.id} onClick={()=>switchToSession(s.id)} className={`mini-card btn-reset ${sessionId===s.id? 'active':''}`} style={{textAlign:'left',padding:6}}>
-              <div style={{fontSize:'.65rem',fontWeight:600}}>{s.major_issue || 'Session '+s.id.slice(0,6)}</div>
-              <div style={{fontSize:'.55rem',opacity:.7}}>Messages: {s.message_count || '?'} {s.analyzed_at? '• analyzed':''}</div>
-            </button>
+        <div className="session-list modern" style={{maxHeight:220,overflow:'auto',marginBottom:10}}>
+          {sessionsLoading && <div className="skeleton-list">{Array.from({length:4}).map((_,i)=><div className="skeleton line" key={i} />)}</div>}
+          {!sessionsLoading && sessions.length===0 && <div className="empty" style={{fontSize:'.7rem'}}>No previous sessions.</div>}
+          {!sessionsLoading && sessions.map(s => (
+            <div key={s.id} className={`session-row ${sessionId===s.id? 'active':''}`}>
+              <div className="session-meta" onClick={()=>switchToSession(s.id)}>
+                {renamingId === s.id ? (
+                  <input
+                    autoFocus
+                    className="rename-input"
+                    value={renameValue}
+                    onChange={e=>setRenameValue(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==='Enter') submitRename(s); if(e.key==='Escape') setRenamingId(null); }}
+                    onBlur={()=>submitRename(s)}
+                    maxLength={120}
+                  />
+                ) : (
+                  <>
+                    <div className="title-line">{s.title || s.major_issue || ('Session ' + s.id.slice(0,6))}</div>
+                    <div className="sub-line">{s.message_count || 0} msgs {s.analyzed_at? '• analyzed':''}</div>
+                  </>
+                )}
+              </div>
+              {renamingId === s.id ? (
+                <button className="icon-btn save" title="Save" onClick={()=>submitRename(s)}>💾</button>
+              ) : (
+                <button className="icon-btn" title="Rename" onClick={()=>beginRename(s)}>✏️</button>
+              )}
+            </div>
           ))}
         </div>
       )}
       <div className="chat-window enhanced">
         {messages.map((m,i) => {
           const prev = messages[i-1];
-          const grouped = prev && prev.role === m.role;
-          const content = pendingMeta?.evidence ? highlightedText(m.text) : m.text;
-          return <div key={m.ts} className={`bubble ${m.role} ${grouped? 'grouped':''}`}>{content}</div>;
+            const grouped = prev && prev.role === m.role;
+            const key = m.id || `${m.ts || ''}-${i}`; // ensure uniqueness
+            if (m.role === 'bot' && typeof m.text === 'string' && looksLikeHtml(m.text)) {
+              const safe = sanitizeHtml(m.text);
+              return <div key={key} className={`bubble ${m.role} ${grouped? 'grouped':''}`} dangerouslySetInnerHTML={{__html: safe}} />;
+            }
+            const content = pendingMeta?.evidence ? highlightedText(m.text) : m.text;
+            return <div key={key} className={`bubble ${m.role} ${grouped? 'grouped':''}`}>{content}</div>;
         })}
         {loading && <div className="bubble bot loading">Thinking...</div>}
         {loadingSessionSwitch && <div className="bubble bot loading">Loading session…</div>}
@@ -301,6 +416,19 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
             {consultMessages.map(m => (
               <div key={m.id} className={`bubble ${m.role==='patient' ? 'user':'bot'}`}>{m.text}</div>
             ))}
+          </div>
+          <div className="attachment-panel" style={{display:'flex',flexDirection:'column',gap:4}}>
+            <div className="row" style={{gap:8,alignItems:'center'}}>
+              <input type="file" onChange={e=> setAttachmentFile(e.target.files?.[0] || null)} accept=".pdf,.png,.jpg,.jpeg,.txt" />
+              <button type="button" className="secondary" disabled={!attachmentFile || uploadingAttachment} onClick={uploadAttachment}>{uploadingAttachment? 'Uploading...' : 'Upload'}</button>
+            </div>
+            {attachments.length>0 && (
+              <div className="attachments-list" style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                {attachments.map(f => (
+                  <button type="button" key={f.filename} className="chip" style={{fontSize:'.55rem'}} onClick={()=>downloadAttachment(f)}>📎 {f.filename} ({Math.round(f.size/1024)}kB)</button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="chat-input-row" style={{marginTop:4}}>
             <input value={consultMsgInput} onChange={e=>setConsultMsgInput(e.target.value)} placeholder="Type a message to doctor" onKeyDown={e=>{ if(e.key==='Enter'){ sendConsultMessage(); } }} />

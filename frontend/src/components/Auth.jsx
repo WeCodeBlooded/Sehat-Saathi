@@ -8,6 +8,8 @@ export default function Auth({ backend, onAuthSuccess }) {
   const [role, setRole] = useState('patient');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [name, setName] = useState('');
+  const [mobile, setMobile] = useState('');
 
   const submit = async (e) => {
     e.preventDefault();
@@ -16,7 +18,7 @@ export default function Auth({ backend, onAuthSuccess }) {
       const res = await fetch(`${backend}/${mode === 'login' ? 'login' : 'register'}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, role: mode==='register'? role : undefined })
+        body: JSON.stringify({ email, password, role: mode==='register'? role : undefined, name: mode==='register'? name : undefined, mobile: mode==='register'? mobile : undefined })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
@@ -42,15 +44,19 @@ export default function Auth({ backend, onAuthSuccess }) {
         <input type="email" required placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
         <input type="password" required placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} />
         {mode==='register' && (
-          <div className="row" style={{gap:12}}>
-            <label style={{flex:1}}>
-              <span style={{fontSize:12,fontWeight:600,letterSpacing:.5}}>Role</span>
-              <select value={role} onChange={e=>setRole(e.target.value)} style={{marginTop:4}}>
-                <option value="patient">Patient</option>
-                <option value="doctor">Doctor</option>
-              </select>
-            </label>
-          </div>
+          <>
+            <input type="text" placeholder="Full Name" value={name} onChange={e=>setName(e.target.value)} required />
+            <input type="tel" placeholder="Mobile Number" value={mobile} onChange={e=>setMobile(e.target.value)} required pattern="[0-9+\-() ]{7,}" />
+            <div className="row" style={{gap:12}}>
+              <label style={{flex:1}}>
+                <span style={{fontSize:12,fontWeight:600,letterSpacing:.5}}>Role</span>
+                <select value={role} onChange={e=>setRole(e.target.value)} style={{marginTop:4}}>
+                  <option value="patient">Patient</option>
+                  <option value="doctor">Doctor</option>
+                </select>
+              </label>
+            </div>
+          </>
         )}
         <button disabled={loading} className="primary" type="submit">{loading? 'Please wait...': mode==='login'? 'Login':'Create Account'}</button>
       </form>
