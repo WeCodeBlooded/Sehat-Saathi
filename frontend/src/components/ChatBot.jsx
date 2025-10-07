@@ -29,6 +29,9 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
   const [loadingSessionSwitch, setLoadingSessionSwitch] = useState(false);
   const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  const lastAutoAnalyzeRef = useRef(0);
+  const [autoAnalyzing, setAutoAnalyzing] = useState(false);
+  const autoRetryRef = useRef(0);
 
   const send = async (e) => {
     e.preventDefault();
@@ -92,6 +95,7 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
   const switchToSession = async (sid) => {
     if (!sid) return;
     if (sid === sessionId) { setShowSessions(false); return; }
+    await maybeAutoAnalyze();
     setLoadingSessionSwitch(true);
     try {
       const res = await fetch(`${backend}/get_chat_session_messages`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ uid, session_id: sid }) });
@@ -113,6 +117,8 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
 
   const startNewSession = () => {
     if (messages.length>0 && !window.confirm('Start a new session? Current chat will remain in history.')) return;
+    // auto analyze current before clearing
+    maybeAutoAnalyze();
     setMessages([]);
     setSessionId(null);
     localStorage.removeItem('activeChatSession');
@@ -182,11 +188,34 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
       consultPollRef.current && clearInterval(consultPollRef.current);
       return;
     }
-    // initial immediate fetch
+    // Try SSE first
+    let es;
+    let fallbackTimer;
+    const startFallback = () => {
+      fallbackTimer && clearInterval(fallbackTimer);
+      fallbackTimer = setInterval(()=> loadConsultMessages(consultRequestId), 3500);
+    };
+    try {
+      es = new EventSource(`${backend.replace(/\/$/,'')}/consult_stream?request_id=${consultRequestId}`);
+      es.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data || '{}');
+          if (Array.isArray(data.messages)) setConsultMessages(data.messages);
+          if (Array.isArray(data.attachments)) setAttachments(data.attachments);
+        } catch(_){}
+      };
+      es.addEventListener('heartbeat', ()=> {/* keep-alive */});
+      es.addEventListener('end', ()=> { es && es.close(); startFallback(); });
+      es.onerror = () => { es && es.close(); startFallback(); };
+    } catch(e) {
+      startFallback();
+    }
+    // initial manual fetch to populate fast
     loadConsultMessages(consultRequestId);
-    consultPollRef.current && clearInterval(consultPollRef.current);
-    consultPollRef.current = setInterval(()=> loadConsultMessages(consultRequestId), 3500);
-    return () => { consultPollRef.current && clearInterval(consultPollRef.current); };
+    return () => {
+      if (es) es.close();
+      fallbackTimer && clearInterval(fallbackTimer);
+    };
   }, [consultRequestId]);
 
   const sendConsultMessage = async () => {
@@ -257,6 +286,39 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
   };
   const cancelPending = () => { setPendingIssue(null); setPendingMeta(null); };
 
+  const maybeAutoAnalyze = async () => {
+    // Debounced full analysis using analyze_chat_session for higher fidelity
+    if (role !== 'patient') return;
+    if (!uid || !sessionId) return;
+    if (messages.length === 0) return;
+    if (sessionIssue) return;
+    const now = Date.now();
+    if (now - lastAutoAnalyzeRef.current < 4000) return; // debounce 4s
+    lastAutoAnalyzeRef.current = now;
+    try {
+      setAutoAnalyzing(true);
+      const payload = { uid, messages: messages.map(m => ({ role: m.role, text: m.text })), save: true, session_id: sessionId };
+      const res = await fetch(`${backend}/analyze_chat_session`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      const data = await res.json();
+      if (res.ok && data.major_issue) {
+        setSessionIssue(data.major_issue);
+        setSessionConfidence(data.confidence || null);
+        loadSessions();
+        autoRetryRef.current = 0;
+      } else if (!res.ok && autoRetryRef.current < 3) {
+        autoRetryRef.current += 1;
+        setTimeout(()=> maybeAutoAnalyze(), 1500 * autoRetryRef.current);
+      }
+    } catch(e) {
+      if (autoRetryRef.current < 3) {
+        autoRetryRef.current += 1;
+        setTimeout(()=> maybeAutoAnalyze(), 1500 * autoRetryRef.current);
+      }
+    } finally {
+      setTimeout(()=> setAutoAnalyzing(false), 600); // brief indicator
+    }
+  };
+
   const highlightedText = (text) => {
     if (!pendingMeta?.evidence) return text;
     return text.split(/(\b)/).map((part,i) => {
@@ -280,6 +342,7 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
   };
 
   useEffect(()=>{ bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(()=>{ if (typeof window !== 'undefined') { window.__lastChatAutoAnalyze = maybeAutoAnalyze; } });
 
   // If user logs out then logs back in (uid change), force a new session regardless of stored value
   const prevUidRef = useRef(uid);
@@ -287,6 +350,7 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
     if (prevUidRef.current !== uid) {
       prevUidRef.current = uid;
       // new login: clear session & messages
+      maybeAutoAnalyze();
       setSessionId(null);
       setMessages([]);
       localStorage.removeItem('activeChatSession');
@@ -365,8 +429,8 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
                   />
                 ) : (
                   <>
-                    <div className="title-line">{s.title || s.major_issue || ('Session ' + s.id.slice(0,6))}</div>
-                    <div className="sub-line">{s.message_count || 0} msgs {s.analyzed_at? '• analyzed':''}</div>
+                    <div className="title-line">{s.title || s.major_issue || ('Session ' + s.id.slice(0,6))} {s.major_issue && <span style={{color:'var(--ok)',fontSize:'.55rem',marginLeft:4}}>●</span>}</div>
+                    <div className="sub-line">{s.message_count || 0} msgs { (s.major_issue || s.analyzed_at)? '• analyzed':''}</div>
                   </>
                 )}
               </div>
@@ -393,6 +457,7 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
         })}
         {loading && <div className="bubble bot loading">Thinking...</div>}
         {loadingSessionSwitch && <div className="bubble bot loading">Loading session…</div>}
+        {autoAnalyzing && !loading && <div className="bubble bot" style={{opacity:.6}}>Analyzing…</div>}
         <div ref={bottomRef} />
       </div>
       <form onSubmit={send} className="chat-input-row fancy">
@@ -403,7 +468,9 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
             onKeyDown={e=> { if (e.key==='Enter' && !e.shiftKey) { send(e); } }}
         />
         <button className="primary" disabled={loading}>{loading? '...' : 'Send'}</button>
-        <button type="button" className="secondary" disabled={analyzing || messages.length===0} onClick={analyzeSession}>{analyzing? 'Analyzing...' : 'Analyze'}</button>
+        {role!=='patient' && (
+          <button type="button" className="secondary" disabled={analyzing || messages.length===0} onClick={analyzeSession}>{analyzing? 'Analyzing...' : 'Analyze'}</button>
+        )}
         {role==='patient' && !consultRequestId && (
           <button type="button" className="secondary" disabled={consultLoading || messages.length===0} onClick={escalateToDoctor}>{consultLoading? '...' : 'Contact Doctor'}</button>
         )}
@@ -424,9 +491,18 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
             </div>
             {attachments.length>0 && (
               <div className="attachments-list" style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                {attachments.map(f => (
-                  <button type="button" key={f.filename} className="chip" style={{fontSize:'.55rem'}} onClick={()=>downloadAttachment(f)}>📎 {f.filename} ({Math.round(f.size/1024)}kB)</button>
-                ))}
+                {attachments.map(f => {
+                  const ext = (f.filename||'').toLowerCase().split('.').pop();
+                  const isImg = ['png','jpg','jpeg'].includes(ext);
+                  if (isImg) {
+                    return (
+                      <div key={f.filename} style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
+                        <button type="button" className="chip" style={{fontSize:'.55rem'}} onClick={()=>downloadAttachment(f)}>🖼 {f.filename}</button>
+                      </div>
+                    );
+                  }
+                  return <button type="button" key={f.filename} className="chip" style={{fontSize:'.55rem'}} onClick={()=>downloadAttachment(f)}>📎 {f.filename} ({Math.round(f.size/1024)}kB)</button>;
+                })}
               </div>
             )}
           </div>
@@ -461,3 +537,5 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
     </div>
   );
 }
+
+// Auto-analysis helper logic injected at bottom (to keep component code readable)

@@ -5,6 +5,7 @@ import random
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import logging, re, os, textwrap, time
+from flask import Response
 from werkzeug.utils import secure_filename
 import base64
 import overpass
@@ -1098,7 +1099,8 @@ def add_health_record():
         return jsonify({'error': 'Firestore not initialized'}), 500
 
     data = request.get_json() or {}
-    uid = data.get('uid')
+    uid = data.get('uid')  # target patient/user id
+    actor_uid = data.get('actor_uid') or uid  # who is performing the action
     record = data.get('record')
 
     # Validate inputs
@@ -1107,7 +1109,11 @@ def add_health_record():
     if not isinstance(record, dict) or not record:
         return jsonify({'error': 'Field "record" (non-empty object) is required in JSON body'}), 400
 
+    # Authorization: only doctors may create records (patients cannot self-add)
     try:
+        actor_doc = db.collection('users').document(actor_uid).get()
+        if not actor_doc.exists or (actor_doc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error': 'Only doctors can add health records'}), 403
         # Reference to user document: users/{uid}
         user_doc_ref = db.collection('users').document(uid)
         # Subcollection health_history
@@ -1154,6 +1160,66 @@ def get_health_history():
         # Generic error per specification (avoid leaking internal details)
         return jsonify({'error': 'Failed to fetch health history'}), 500
 
+# ---- Helper: automatic analysis for a chat session when switching/ending ----
+def auto_analyze_and_store(uid: str, session_id: str):
+    """Server-side automatic analysis of a stored chat session.
+    Reads the last ~100 messages from users/{uid}/chat_sessions/{session_id}/messages
+    Runs same heuristic as analyze_chat_session (lightweight subset) and stores result if found.
+    Idempotent: will not overwrite existing major_issue in session doc.
+    """
+    if db is None or not uid or not session_id:
+        return None
+
+@app.route('/auto_analyze_session', methods=['POST'])
+def auto_analyze_session():
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    data = request.get_json() or {}
+    uid = data.get('uid')
+    session_id = data.get('session_id')
+    if not uid or not session_id:
+        return jsonify({'error':'uid and session_id required'}), 400
+    issue = auto_analyze_and_store(uid, session_id)
+    return jsonify({'success': True, 'major_issue': issue}), 200
+    try:
+        sess_ref = db.collection('users').document(uid).collection('chat_sessions').document(session_id)
+        sess_snap = sess_ref.get()
+        if not sess_snap.exists:
+            return None
+        if (sess_snap.to_dict() or {}).get('major_issue'):
+            return None  # already analyzed / saved
+        msgs_coll = sess_ref.collection('messages').order_by('ts').limit(100).stream()
+        corpus = []
+        for m in msgs_coll:
+            md = m.to_dict() or {}
+            if md.get('role') in ('user','doctor','bot'):
+                corpus.append(md.get('text',''))
+        joined = ' '.join(corpus)[:8000]
+        if not joined.strip():
+            return None
+        # Very light heuristic: reuse existing keyword mapping from responses keys
+        best_issue = None; best_score = 0
+        for key in responses.keys():
+            pat = re.compile(r'\b' + re.escape(key.lower()) + r'\b')
+            hits = len(pat.findall(joined.lower()))
+            if hits > best_score:
+                best_score = hits
+                best_issue = key
+        if not best_issue:
+            return None
+        # Store to health history
+        hh_ref = db.collection('users').document(uid).collection('health_history').document()
+        hh_ref.set({
+            'symptom': best_issue.title(),
+            'source': 'chat_session_auto',
+            'auto': True,
+            'created_at': firestore.SERVER_TIMESTAMP
+        })
+        sess_ref.set({'major_issue': best_issue.title(), 'analyzed_at': firestore.SERVER_TIMESTAMP}, merge=True)
+        return best_issue
+    except Exception:
+        return None
+
 @app.route('/delete_health_record', methods=['POST'])
 def delete_health_record():
     """Delete a health history record.
@@ -1163,10 +1229,14 @@ def delete_health_record():
         return jsonify({'error': 'Firestore not initialized'}), 500
     data = request.get_json() or {}
     uid = data.get('uid')
+    actor_uid = data.get('actor_uid') or uid
     rec_id = data.get('id')
     if not uid or not rec_id:
         return jsonify({'error': 'Fields "uid" and "id" are required'}), 400
     try:
+        actor_doc = db.collection('users').document(actor_uid).get()
+        if not actor_doc.exists or (actor_doc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error': 'Only doctors can delete records'}), 403
         ref = db.collection('users').document(uid).collection('health_history').document(rec_id)
         if not ref.get().exists:
             return jsonify({'error': 'Record not found'}), 404
@@ -1184,6 +1254,7 @@ def update_health_record():
         return jsonify({'error': 'Firestore not initialized'}), 500
     data = request.get_json() or {}
     uid = data.get('uid')
+    actor_uid = data.get('actor_uid') or uid
     rec_id = data.get('id')
     updates = data.get('updates') or {}
     if not uid or not rec_id:
@@ -1191,6 +1262,9 @@ def update_health_record():
     if not isinstance(updates, dict) or not updates:
         return jsonify({'error': 'Field "updates" (non-empty object) is required'}), 400
     try:
+        actor_doc = db.collection('users').document(actor_uid).get()
+        if not actor_doc.exists or (actor_doc.to_dict() or {}).get('role') != 'doctor':
+            return jsonify({'error': 'Only doctors can update records'}), 403
         ref = db.collection('users').document(uid).collection('health_history').document(rec_id)
         if not ref.get().exists:
             return jsonify({'error': 'Record not found'}), 404
@@ -2218,6 +2292,7 @@ def close_consult():
     doctor_uid = data.get('doctor_uid')
     request_id = data.get('request_id')
     remarks = (data.get('remarks') or '').strip()
+    prescription = (data.get('prescription') or '').strip()
     if not doctor_uid or not request_id:
         return jsonify({'error':'doctor_uid and request_id required'}), 400
     try:
@@ -2239,22 +2314,42 @@ def close_consult():
         update_payload = {'status':'closed','closed_at':firestore.SERVER_TIMESTAMP}
         if remarks:
             update_payload['doctor_remarks'] = remarks
+        if prescription:
+            update_payload['prescription'] = prescription
         cref.set(update_payload, merge=True)
         # Store doctor remarks into patient health history if provided
-        if remarks and db is not None:
+        if (remarks or prescription) and db is not None:
             try:
                 patient_uid = meta.get('patient_uid')
                 if patient_uid:
                     hh_ref = db.collection('users').document(patient_uid).collection('health_history').document()
                     hh_ref.set({
                         'symptom': meta.get('primary_issue') or meta.get('reason') or 'Consultation Summary',
-                        'doctor_remarks': remarks,
+                        'doctor_remarks': remarks or None,
+                        'prescription': prescription or None,
                         'consult_id': request_id,
                         'source': 'consult_close',
                         'created_at': firestore.SERVER_TIMESTAMP
                     })
             except Exception:
                 pass
+        # Lightweight inference of primary issue from consult messages if absent
+        try:
+            if not meta.get('primary_issue'):
+                msgs_stream = cref.collection('messages').order_by('ts').limit(80).stream()
+                text_blob = ' '.join([ (m.to_dict() or {}).get('text','') for m in msgs_stream ])[:6000].lower()
+                best_issue=None; best_hits=0
+                for key in responses.keys():
+                    hits = len(re.findall(r'\b'+re.escape(key.lower())+r'\b', text_blob))
+                    if hits>best_hits:
+                        best_hits=hits; best_issue=key
+                if best_issue:
+                    cref.set({'primary_issue': best_issue.title()}, merge=True)
+                    if (remarks or prescription) and patient_uid:
+                        # Update the just-created health history entry with inferred symptom if generic label used
+                        pass
+        except Exception:
+            pass
         return jsonify({'success': True, 'request_id': request_id, 'status':'closed', 'remarks_saved': bool(remarks)}), 200
     except Exception as e:
         return jsonify({'error':'Failed to close','details':str(e)}), 500
@@ -2300,6 +2395,51 @@ def get_consult_messages():
         return jsonify({'success': True, 'messages': msgs, 'status': meta.get('status'), 'doctor_uid': meta.get('doctor_uid'), 'patient_uid': meta.get('patient_uid'), 'patient_detail': patient_detail, 'attachments': attachments}), 200
     except Exception as e:
         return jsonify({'error':'Failed to fetch messages','details':str(e)}), 500
+
+@app.route('/consult_stream')
+def consult_stream():
+    """Server-Sent Events stream for consult messages + attachments (prototype polling server-side).
+    Query args: request_id=<consult_id>
+    Emits event every time message count changes (or every 25s keep-alive).
+    """
+    if db is None:
+        return jsonify({'error':'Firestore not initialized'}), 500
+    request_id = request.args.get('request_id')
+    if not request_id:
+        return jsonify({'error':'request_id required'}), 400
+    def event_stream():
+        last_count = -1
+        last_emit = time.time()
+        while True:
+            try:
+                cref = db.collection('consult_requests').document(request_id)
+                if not cref.get().exists:
+                    yield 'event: end\ndata: {"error":"not_found"}\n\n'
+                    break
+                msgs = []
+                stream = cref.collection('messages').order_by('ts').stream()
+                for m in stream:
+                    rec = m.to_dict() or {}
+                    rec['id'] = m.id
+                    msgs.append(rec)
+                count = len(msgs)
+                now = time.time()
+                if count != last_count:
+                    attachments = _list_consult_attachments(request_id)
+                    payload = json.dumps({'messages': msgs, 'attachments': attachments, 'count': count})
+                    yield f'data: {payload}\n\n'
+                    last_count = count
+                    last_emit = now
+                elif (now - last_emit) > 25:
+                    yield 'event: heartbeat\ndata: {}\n\n'
+                    last_emit = now
+                time.sleep(1.8)
+            except GeneratorExit:
+                break
+            except Exception as e:
+                yield f'event: error\ndata: {{"error":"{str(e)}"}}\n\n'
+                time.sleep(4)
+    return Response(event_stream(), mimetype='text/event-stream')
 
 @app.route('/send_consult_message', methods=['POST'])
 def send_consult_message():
@@ -2543,7 +2683,7 @@ def internal_error(e):
 for _ep in [
     '/request_consult','/list_open_consults','/accept_consult','/list_my_consults',
     '/get_consult_messages','/send_consult_message','/search_patients','/get_patient_history',
-    '/get_patient_active_consult','/get_chat_session_messages','/list_chat_sessions','/analyze_chat_session','/get_profile','/get_all_patient_data','/update_profile','/rename_chat_session','/place_autocomplete','/upload_consult_attachment','/list_consult_attachments','/get_consult_attachment'
+    '/get_patient_active_consult','/get_chat_session_messages','/list_chat_sessions','/analyze_chat_session','/auto_analyze_session','/get_profile','/get_all_patient_data','/update_profile','/rename_chat_session','/place_autocomplete','/upload_consult_attachment','/list_consult_attachments','/get_consult_attachment'
 ]:
     app.add_url_rule(_ep, methods=['OPTIONS'], endpoint=f'options_{_ep.strip("/")}', view_func=lambda: ('',204))
 

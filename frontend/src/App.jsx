@@ -81,10 +81,15 @@ function MyConsults({ backend, uid, notify }) {
 	const [activeId, setActiveId] = useState(() => localStorage.getItem('lastAcceptedConsult') || null);
 	const [messages, setMessages] = useState([]);
 	const [attachments, setAttachments] = useState([]);
+	const [uploadingAttachment, setUploadingAttachment] = useState(false);
+	const [attachmentFile, setAttachmentFile] = useState(null);
 	const [input, setInput] = useState('');
 	const [loading, setLoading] = useState(true);
 	const [msgLoading, setMsgLoading] = useState(false); // only used for initial load / switch
 	const [initialMsgLoaded, setInitialMsgLoaded] = useState(false);
+	const [showCloseModal, setShowCloseModal] = useState(false);
+	const [closeRemarks, setCloseRemarks] = useState('');
+	const [closePrescription, setClosePrescription] = useState('');
 	const pollRef = useRef(null);
 
 	const loadConsults = useCallback(async ()=>{
@@ -125,9 +130,22 @@ function MyConsults({ backend, uid, notify }) {
 		if (!activeId) return;
 		setInitialMsgLoaded(false);
 		loadMessages(activeId, { silent:false }); // initial visible load
-		pollRef.current && clearInterval(pollRef.current);
-		pollRef.current = setInterval(()=> loadMessages(activeId, { silent:true }), 3500); // silent polls
-		return () => { pollRef.current && clearInterval(pollRef.current); };
+		// SSE attempt
+		let es; let fallbackTimer;
+		const startFallback = () => {
+			fallbackTimer && clearInterval(fallbackTimer);
+			fallbackTimer = setInterval(()=> loadMessages(activeId, { silent:true }), 3500);
+		};
+		try {
+			es = new EventSource(`${backend.replace(/\/$/,'')}/consult_stream?request_id=${activeId}`);
+			es.onmessage = ev => {
+				try { const data = JSON.parse(ev.data||'{}'); if (Array.isArray(data.messages)) setMessages(data.messages); if (Array.isArray(data.attachments)) setAttachments(data.attachments); setInitialMsgLoaded(true); } catch(_){ }
+			};
+			es.addEventListener('heartbeat', ()=>{});
+			es.addEventListener('end', ()=> { es && es.close(); startFallback(); });
+			es.onerror = () => { es && es.close(); startFallback(); };
+		} catch(e) { startFallback(); }
+		return () => { es && es.close(); fallbackTimer && clearInterval(fallbackTimer); };
 	},[activeId, loadMessages]);
 
 	const send = async () => {
@@ -160,19 +178,42 @@ function MyConsults({ backend, uid, notify }) {
 		} catch(e) { notify && notify(e.message,'error'); }
 	};
 
+	const uploadPrescriptionAttachment = async () => {
+		if (!activeId || !attachmentFile) return;
+		const f = attachmentFile;
+		if (f.size > 2*1024*1024) { notify && notify('File too large (2MB max)','error'); return; }
+		setUploadingAttachment(true);
+		try {
+			const toBase64 = file => new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file); });
+			const b64 = await toBase64(f);
+			const resp = await fetch(`${backend}/upload_consult_attachment`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ consult_id: activeId, uid, role:'doctor', filename: f.name, content_base64: b64 }) });
+			const data = await resp.json();
+			if (!resp.ok) throw new Error(data.error || 'Upload failed');
+			notify && notify('Prescription file uploaded','success');
+			setAttachmentFile(null);
+			loadMessages(activeId, { silent:true });
+		} catch(e) { notify && notify(e.message,'error'); }
+		finally { setUploadingAttachment(false); }
+	};
+
 	const closeConsult = async () => {
 		if (!activeId) return;
-		if (!window.confirm('Close this consult? This will end the chat.')) return;
+		setShowCloseModal(true);
+	};
+
+	const submitCloseConsult = async () => {
+		if (!activeId) return;
 		try {
-			const res = await fetch(`${backend}/close_consult`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ doctor_uid: uid, request_id: activeId }) });
+			const payload = { doctor_uid: uid, request_id: activeId, remarks: closeRemarks, prescription: closePrescription };
+			const res = await fetch(`${backend}/close_consult`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
 			const data = await res.json();
 			if (!res.ok) throw new Error(data.error || 'Close failed');
 			notify && notify('Consult closed','success');
-			// remove from list and clear selection
 			setConsults(cs => cs.filter(c=>c.id!==activeId));
 			setActiveId(null);
 			setMessages([]);
-		} catch (e) { notify && notify(e.message,'error'); }
+			setCloseRemarks(''); setClosePrescription(''); setShowCloseModal(false);
+		} catch(e) { notify && notify(e.message,'error'); }
 	};
 
 	return (
@@ -211,9 +252,13 @@ function MyConsults({ backend, uid, notify }) {
 								{msgLoading && !initialMsgLoaded && <div className="bubble bot loading">Loading…</div>}
 								{attachments.length>0 && (
 									<div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-										{attachments.map(f => (
-											<button type="button" key={f.filename} className="chip" style={{fontSize:'.55rem'}} onClick={()=>downloadAttachment(f)}>📎 {f.filename} ({Math.round((f.size||0)/1024)}kB)</button>
-										))}
+										{attachments.map(f => {
+											const ext = (f.filename||'').toLowerCase().split('.').pop();
+											const isImg = ['png','jpg','jpeg'].includes(ext);
+											return (
+												<button type="button" key={f.filename} className="chip" style={{fontSize:'.55rem'}} onClick={()=>downloadAttachment(f)}>{isImg? '🖼' : '📎'} {f.filename} {(!isImg)&&`(${Math.round((f.size||0)/1024)}kB)`}</button>
+											);
+										})}
 									</div>
 								)}
 							</div>
@@ -221,9 +266,27 @@ function MyConsults({ backend, uid, notify }) {
 								<input value={input} onChange={e=>setInput(e.target.value)} placeholder="Type a message" onKeyDown={e=>{if(e.key==='Enter'){send();}}} />
 								<button className="primary" type="button" onClick={send}>Send</button>
 							</div>
+							<div className="attachment-panel" style={{marginTop:6,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+								<input type="file" accept=".pdf,.png,.jpg,.jpeg,.txt" onChange={e=> setAttachmentFile(e.target.files?.[0]||null)} />
+								<button className="secondary" type="button" disabled={!attachmentFile || uploadingAttachment} onClick={uploadPrescriptionAttachment}>{uploadingAttachment? 'Uploading...' : 'Upload Rx'}</button>
+								{attachmentFile && <span style={{fontSize:'.55rem',opacity:.7}}>{attachmentFile.name}</span>}
+							</div>
 						</>
 					)}
 				</div>
+				{showCloseModal && (
+					<div className="modal-overlay" style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100}}>
+						<div className="card" style={{maxWidth:480,width:'100%',padding:'24px',display:'flex',flexDirection:'column',gap:16}}>
+							<h3 style={{margin:0}}>Close Consult</h3>
+							<textarea rows={3} placeholder="Doctor remarks" value={closeRemarks} onChange={e=>setCloseRemarks(e.target.value)} />
+							<textarea rows={3} placeholder="Prescription details" value={closePrescription} onChange={e=>setClosePrescription(e.target.value)} />
+							<div className="row" style={{gap:12,justifyContent:'flex-end'}}>
+								<button className="ghost" type="button" onClick={()=>{setShowCloseModal(false);}}>Cancel</button>
+								<button className="primary" type="button" onClick={submitCloseConsult}>Save & Close</button>
+							</div>
+						</div>
+					</div>
+				)}
 			</div>
 			<p className="hint">Polling every 3.5s. Replace with real-time listeners in production.</p>
 		</div>
@@ -457,6 +520,7 @@ export default function App() {
 	}, []);
 
 	const logout = () => {
+		try { if (window.__lastChatAutoAnalyze) { window.__lastChatAutoAnalyze(); } } catch(e) {}
 		localStorage.removeItem('uid');
 		localStorage.removeItem('email');
 		localStorage.removeItem('role');
@@ -532,7 +596,7 @@ export default function App() {
 			case 'hospitals':
 				return <HospitalLocator backend={BACKEND_URL} uid={uid} notify={pushToast} />;
 			case 'history':
-				return <HealthHistory backend={BACKEND_URL} uid={uid} notify={pushToast} />;
+				return <HealthHistory backend={BACKEND_URL} uid={uid} role={role} notify={pushToast} />;
 			case 'patient_overview':
 				return <PatientHistoryOverview backend={BACKEND_URL} uid={uid} role={role} notify={pushToast} />;
 			default:

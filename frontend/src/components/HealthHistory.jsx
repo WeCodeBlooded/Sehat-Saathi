@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-export default function HealthHistory({ backend, uid }) {
+export default function HealthHistory({ backend, uid, role, notify }) {
   const [records, setRecords] = useState([]);
   const [symptom, setSymptom] = useState('');
   const [date, setDate] = useState('');
@@ -64,9 +64,11 @@ export default function HealthHistory({ backend, uid }) {
     } catch (e) { setError(e.message); setRecords(prev); }
   };
 
+  const isDoctor = role === 'doctor';
   return (
     <div className="feature-card">
       <h2>Health History</h2>
+      {isDoctor && (
       <form onSubmit={add} className="grid-form">
         <label>Symptom<input value={symptom} onChange={e=>setSymptom(e.target.value)} required placeholder="Fever" /></label>
         <label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)} required /></label>
@@ -75,6 +77,7 @@ export default function HealthHistory({ backend, uid }) {
           <button className="primary" disabled={loading}>{loading? 'Saving...':'Add Record'}</button>
         </div>
       </form>
+      )}
       {error && <div className="alert error">{error}</div>}
       <h3>Past Records</h3>
       <div className="records-table-wrapper">
@@ -82,25 +85,34 @@ export default function HealthHistory({ backend, uid }) {
         {!loadingList && records.length === 0 && <div className="empty">No records yet.</div>}
         {!loadingList && records.length > 0 && (
           <table className="records-table">
-            <thead><tr><th>Symptom</th><th>Date</th><th>Doctor Notes</th><th></th></tr></thead>
+            <thead><tr><th>Symptom</th><th>Date</th><th>Doctor Notes</th><th>Prescription</th><th></th></tr></thead>
             <tbody>
               {records.map(r => (
                 <tr key={r.id} className={r.optimistic? 'optimistic':''}>
                   <td>{editingId===r.id? <input value={editSymptom} onChange={e=>setEditSymptom(e.target.value)} /> : (r.symptom || r.record?.symptom)}</td>
                   <td>{editingId===r.id? <input type="date" value={editDate} onChange={e=>setEditDate(e.target.value)} /> : (r.date || r.record?.date)}</td>
                   <td>{editingId===r.id? <textarea rows={2} value={editNotes} onChange={e=>setEditNotes(e.target.value)} /> : (r.doctor_notes || r.record?.doctor_notes)}</td>
+                  <td style={{maxWidth:180}}>
+                    {r.prescription ? (
+                      <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                        <span style={{fontSize:'.6rem',whiteSpace:'pre-wrap'}}>{r.prescription.slice(0,160)}{r.prescription.length>160?'…':''}</span>
+                      </div>
+                    ) : <span style={{opacity:.4,fontSize:'.55rem'}}>—</span>}
+                  </td>
                   <td style={{whiteSpace:'nowrap'}}>
-                    {editingId===r.id ? (
-                      <>
-                        <button type="button" className="ghost" onClick={()=>saveEdit(r.id)}>Save</button>
-                        <button type="button" className="ghost" onClick={cancelEdit}>Cancel</button>
-                      </>
-                    ) : (
-                      <>
-                        <button type="button" className="ghost" onClick={()=>startEdit(r)}>Edit</button>
-                        <button type="button" className="ghost" onClick={()=>remove(r.id)}>Delete</button>
-                      </>
-                    )}
+                    {isDoctor ? (
+                      editingId===r.id ? (
+                        <>
+                          <button type="button" className="ghost" onClick={()=>saveEdit(r.id)}>Save</button>
+                          <button type="button" className="ghost" onClick={cancelEdit}>Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" className="ghost" onClick={()=>startEdit(r)}>Edit</button>
+                          <button type="button" className="ghost" onClick={()=>remove(r.id)}>Delete</button>
+                        </>
+                      )
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -108,6 +120,7 @@ export default function HealthHistory({ backend, uid }) {
           </table>
         )}
       </div>
+      {!isDoctor && <p className="hint">Records are clinician-maintained. Contact a verified doctor for updates.</p>}
     </div>
   );
 }
