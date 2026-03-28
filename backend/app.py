@@ -5,11 +5,51 @@ import random
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import logging, re, os, textwrap, time
+from datetime import datetime, timedelta
 from flask import Response
 from werkzeug.utils import secure_filename
 import base64
 import overpass
 import requests  # Added for Hugging Face zero-shot classification
+
+# MedlinePlus Integration for Medical Knowledge
+try:
+    from medlineplus_integration import medical_enhancer, enhance_chatbot_response, get_medical_info
+    MEDLINEPLUS_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f'MedlinePlus integration not available: {e}')
+    MEDLINEPLUS_AVAILABLE = False
+    # Create dummy functions
+    def enhance_chatbot_response(user_query, detected_conditions):
+        return {'confidence_boost': False, 'authoritative_summary': '', 'medical_sources': []}
+    def get_medical_info(query, max_results=3):
+        return []
+
+# External Healthcare APIs Integration
+try:
+    from integrations.lybrate_integration import LybrateAPI, EnhancedDoctorDirectory
+    from integrations.practo_integration import PractoAPI, HealthcareServicesIntegrator
+    
+    # Initialize external healthcare services
+    LYBRATE_KEY = os.getenv('LYBRATE_API_KEY')
+    PRACTO_KEY = os.getenv('PRACTO_API_KEY')
+    
+    # Initialize integrations if keys are available
+    healthcare_integrator = None
+    if LYBRATE_KEY or PRACTO_KEY:
+        healthcare_integrator = HealthcareServicesIntegrator(
+            lybrate_key=LYBRATE_KEY,
+            practo_key=PRACTO_KEY
+        )
+        logging.info("External healthcare APIs initialized successfully")
+    else:
+        logging.info("External healthcare API keys not found - using local data only")
+    
+    EXTERNAL_APIS_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f'External healthcare APIs not available: {e}')
+    healthcare_integrator = None
+    EXTERNAL_APIS_AVAILABLE = False
 
 # Optional Gemini / Generative AI
 try:
@@ -177,6 +217,201 @@ with open('data/responses.json', 'r') as file:
 with open('data/hospitals.json', 'r') as file:
     hospitals_data = json.load(file)
 
+# Enhanced Greeting and Conversation Detection
+def detect_greeting_or_conversation(message_lower, uid=None):
+    """
+    Detect greetings, farewells, and general conversational patterns.
+    Returns appropriate response or None if this is likely a medical query.
+    """
+    
+    # Expanded greeting patterns (English, Hindi, Hinglish, casual)
+    greeting_patterns = [
+        r'\b(hello|hi|hey|namaste|namaskar|yo|hola|sup|wassup|greetings|shalom|bonjour)\b',
+        r'\b(good morning|good afternoon|good evening|good night|morning|evening|night)\b',
+        r'\b(how are you|kaise ho|kya hal hai|kaisi ho|howdy|how r u|howz it going)\b',
+        r'\b(what\'s up|whats up|wassup|kya chal raha hai|kya haal hai|kya scene hai)\b',
+        r'\b(yo|sup|hey there|hi there|hello there)\b'
+    ]
+    # Expanded farewells
+    farewell_patterns = [
+        r'\b(bye|goodbye|see you|alvida|milte hain|see ya|later|ciao|peace out)\b',
+        r'\b(thank you|thanks|dhanyawad|shukriya|tysm|thx|thank u)\b',
+        r'\b(take care|good night|shubh ratri|rest well|sweet dreams)\b'
+    ]
+    # Expanded general conversation patterns
+    conversation_patterns = [
+        r'\b(who are you|what are you|aap kaun hain|who r u|who is this|who am i talking to)\b',
+        r'\b(what can you do|help me|kya kar sakte hain|how can you help|what help)\b',
+        r'\b(tell me about yourself|introduce yourself|about you|about sehat saathi)\b',
+        r'\b(how does this work|kaise kaam karta hai|how does it work|explain this)\b',
+        r'\b(are you real|are you a doctor|are you human|are you ai|are you chatbot)\b'
+    ]
+    
+    # Check for greetings
+    for pattern in greeting_patterns:
+        if re.search(pattern, message_lower):
+            greetings = [
+                "Hello! I'm your health assistant. How can I help you today?",
+                "Hi there! I'm here to help with your health questions. What's on your mind?",
+                "Namaste! I can help you with health information and advice. How are you feeling?",
+                "Hello! I'm Sehat Saathi, your health companion. Please tell me how you're feeling or what health concerns you have."
+            ]
+            return random.choice(greetings)
+    
+    # Check for farewells
+    for pattern in farewell_patterns:
+        if re.search(pattern, message_lower):
+            farewells = [
+                "Take care! Remember to stay healthy and don't hesitate to reach out if you need medical advice.",
+                "Goodbye! Wishing you good health. Feel free to ask me anything health-related anytime.",
+                "Thank you for using Sehat Saathi! Stay safe and healthy. Come back anytime you need health guidance.",
+                "Take care of yourself! Remember - if you have serious symptoms, always consult a doctor."
+            ]
+            return random.choice(farewells)
+    
+    # Check for general conversation
+    for pattern in conversation_patterns:
+        if re.search(pattern, message_lower):
+            info_responses = [
+                "I'm Sehat Saathi, your AI health assistant. I can help you understand symptoms, provide basic medical guidance, and suggest when to see a doctor. I can also help you find nearby hospitals and doctors. What health concern would you like to discuss?",
+                "I'm here to help with your health questions! I can provide information about symptoms, basic first aid, when to seek medical care, and help you locate healthcare services. What would you like to know about your health?",
+                "I'm an AI health companion designed to help with medical questions and health guidance. I can assist with symptom assessment, basic health advice, emergency care guidance, and finding healthcare providers. How can I help you today?"
+            ]
+            return random.choice(info_responses)
+    
+    # Check if message is too short, generic, or just emojis (likely not a medical query)
+    if len(message_lower.split()) <= 2 or all(not c.isalnum() for c in message_lower):
+        short_responses = [
+            "👋 Hi! Could you tell me a bit more about your health or how you're feeling?",
+            "I'm here to help with health questions. Please describe your symptoms or ask any health-related question!",
+            "Could you share more details about your health concern or what you're experiencing?"
+        ]
+        return random.choice(short_responses)
+    
+    # Check for medical contexts involving family members (should NOT be redirected)
+    family_medical_patterns = [
+        r'\b(my|our)\s+(child|baby|kid|son|daughter|infant|toddler|teenager|parent|mother|father|mom|dad|wife|husband|family|friend)\s+(has|is|feels|experiencing|complaining)',
+        r'\b(child|baby|kid|son|daughter|infant|toddler|teenager|parent|mother|father|mom|dad|wife|husband)\s+(has|is|feels).+(fever|pain|sick|ill|hurt|cough|cold|vomit)',
+        r'\b(baby|infant|child|kid).+(fever|temperature|sick|crying|not eating|rash|cough)'
+    ]
+    for pattern in family_medical_patterns:
+        if re.search(pattern, message_lower):
+            return None  # Allow it to be treated as a medical query
+    
+    # Expanded non-health topics and friendly redirection
+    non_health_patterns = [
+        r'\b(weather|movie|song|game|food|restaurant|travel|trip|holiday|vacation|party|shopping|shopping mall|mall|sale|discount)\b',
+        r'\b(politics|election|news|sports|cricket|football|basketball|tennis|olympics|score|match|team)\b',
+        r'\b(joke|funny|entertainment|music|dance|meme|tiktok|reel|youtube|netflix|prime|series|show)\b',
+        r'\b(work|job|office|study|school|college|exam|assignment|project|boss|teacher|student)\b',
+        r'\b(relationship|love|dating|crush|marriage|wedding|breakup)\b'
+    ]
+    for pattern in non_health_patterns:
+        if re.search(pattern, message_lower):
+            redirect_responses = [
+                "I'm here to help with health and medical questions! If you have any health concerns, symptoms, or want to know about healthy living, just ask.",
+                "I focus on health topics. If you have a question about your health, symptoms, or medical care, I'm here for you!",
+                "I'm your health assistant, so I specialize in medical and wellness guidance. Let me know if you have any health-related questions!"
+            ]
+            return random.choice(redirect_responses)
+
+    # Catch-all for totally off-topic, nonsense, or unsupported input
+    if not re.search(r'[a-zA-Z0-9]', message_lower):
+        return "I'm here to help with health and wellness questions. Please type your health concern or symptom."
+
+    # If the message is unclear or doesn't match anything, gently prompt for clarification
+    unclear_patterns = [
+        r'\b(idk|dont know|don\'t know|no idea|random|anything|whatever|something|nothing)\b',
+        r'\?\?\?|\.\.\.',
+        r'[\?\!\.][\?\!\.][\?\!\.]+'
+    ]
+    for pattern in unclear_patterns:
+        if re.search(pattern, message_lower):
+            return "Could you please clarify your health question or describe your symptoms in a bit more detail?"
+    
+    # Return None if this seems like a potential medical query
+    return None
+
+# Calculate match confidence for keyword matching
+def calculate_match_confidence(keyword, normalized_message, original_message):
+    """
+    Calculate confidence score for keyword matches based on various factors.
+    """
+    # Base confidence
+    confidence = 0.5
+    
+    # Boost for longer, more specific keywords
+    if len(keyword) > 10:
+        confidence += 0.2
+    elif len(keyword) > 5:
+        confidence += 0.1
+    
+    # Boost for exact matches (non-normalized)
+    if keyword.lower() in original_message.lower():
+        confidence += 0.2
+    
+    # Boost for medical-specific terms
+    medical_terms = ['pain', 'ache', 'fever', 'infection', 'disease', 'syndrome', 'disorder']
+    if any(term in keyword.lower() for term in medical_terms):
+        confidence += 0.15
+    
+    # Boost for multiple word keywords (more specific)
+    if ' ' in keyword:
+        confidence += 0.1
+    
+    # Penalize very common words
+    common_words = ['the', 'and', 'or', 'with', 'have', 'is', 'are']
+    if any(word in keyword.lower() for word in common_words):
+        confidence -= 0.1
+    
+    # Ensure confidence is within bounds
+    return max(0.1, min(0.95, confidence))
+
+# Enhanced Medical Response Accuracy
+def get_enhanced_medical_response(user_message, matched_entries, confidence_scores):
+    """
+    Provide more accurate and comprehensive medical responses with better context.
+    """
+    if not matched_entries:
+        return None
+    
+    # Sort by confidence if available
+    if confidence_scores:
+        sorted_entries = sorted(zip(matched_entries, confidence_scores), 
+                              key=lambda x: x[1], reverse=True)
+        best_entry, best_confidence = sorted_entries[0]
+    else:
+        best_entry = matched_entries[0]
+        best_confidence = 0.5
+    
+    # Get the advice
+    if isinstance(best_entry, tuple):
+        entry, matched_keywords = best_entry
+        advice = entry.get('advice', '')
+        keywords = entry.get('keywords', [])
+    else:
+        advice = best_entry.get('advice', '')
+        keywords = best_entry.get('keywords', [])
+        matched_keywords = set()
+    
+    # Enhanced advice with additional context
+    enhanced_advice = advice
+    
+    # Add confidence indicator for low confidence matches
+    if best_confidence < 0.3:
+        enhanced_advice = f"⚠️ Based on your description, this might be related to: {advice}\n\nHowever, I recommend consulting a healthcare professional for accurate diagnosis and treatment."
+    
+    # Add emergency warnings for critical symptoms
+    critical_keywords = ['chest pain', 'heart attack', 'stroke', 'seizure', 'poisoning', 'severe allergic reaction']
+    if any(kw in str(keywords).lower() for kw in critical_keywords):
+        enhanced_advice = "🚨 EMERGENCY: " + enhanced_advice + "\n\n⚡ If this is a medical emergency, call emergency services immediately!"
+    
+    # Add follow-up recommendations
+    if best_confidence > 0.7:
+        enhanced_advice += "\n\n💡 Additional advice: Monitor your symptoms, maintain good hygiene, rest adequately, and don't hesitate to seek professional medical care if symptoms worsen or persist."
+    
+    return enhanced_advice
+
 # Simple in-memory doctor directory mapping specialties to available doctors.
 # In production this would come from a database or external service.
 DOCTOR_DIRECTORY = {
@@ -221,7 +456,67 @@ SYNONYM_MAP = {
     'loose motion': 'diarrhea',
     'throat pain': 'sore throat',
     'coughing': 'cough',
-    'nauseous': 'nausea'
+    'nauseous': 'nausea',
+    # Women's health synonyms
+    'period bleeding': 'menstrual bleeding',
+    'period pain': 'menstrual pain', 
+    'period problems': 'menstrual problem',
+    'menstrual cycle': 'menstrual problem',
+    'periods': 'menstrual bleeding',
+    'menses': 'menstrual bleeding',
+    'monthly cycle': 'menstrual problem',
+    'vaginal spotting': 'vaginal bleeding',
+    'spotting': 'vaginal bleeding',
+    'heavy flow': 'heavy periods',
+    'irregular cycle': 'irregular periods',
+    'gynec problem': 'gynecological issue',
+    'women problem': 'gynecological issue',
+    'female issue': 'gynecological issue',
+    'reproductive issue': 'reproductive health',
+    'pelvic discomfort': 'pelvic pain',
+    'lower belly pain': 'pelvic pain',
+    # Cardiovascular synonyms
+    'heart attack': 'cardiac emergency',
+    'heart trouble': 'heart problem',
+    'chest tightness': 'chest pain',
+    'chest pressure': 'chest pain',
+    'high bp': 'high blood pressure',
+    'hypertension': 'high blood pressure',
+    # Respiratory synonyms
+    'breathlessness': 'shortness of breath',
+    'wheezing': 'breathing difficulty',
+    'chest infection': 'pneumonia',
+    'lung problem': 'respiratory infection',
+    # Neurological synonyms
+    'brain stroke': 'stroke symptoms',
+    'paralysis': 'stroke symptoms',
+    'fits': 'seizure',
+    'convulsions': 'seizure',
+    'memory loss': 'memory problem',
+    'confusion': 'memory problem',
+    # Musculoskeletal synonyms
+    'bone pain': 'joint pain',
+    'muscle pain': 'muscle problem',
+    'sprain': 'injury',
+    'strain': 'muscle problem',
+    'broken bone': 'fracture',
+    # Mental health synonyms
+    'stress': 'anxiety',
+    'worry': 'anxiety',
+    'panic': 'anxiety',
+    'sadness': 'depression',
+    'sleep disorder': 'sleep problem',
+    'insomnia': 'sleep problem',
+    # Endocrine synonyms
+    'sugar problem': 'diabetes',
+    'blood sugar': 'diabetes',
+    'thyroid': 'thyroid problem',
+    # Emergency synonyms
+    'unconscious': 'emergency condition',
+    'collapse': 'emergency condition',
+    'severe pain': 'emergency condition',
+    'drug overdose': 'poisoning',
+    'toxic exposure': 'poisoning'
 }
 
 def normalize_synonyms(text: str) -> str:
@@ -244,16 +539,43 @@ HF_MODEL = os.getenv('HUGGINGFACE_ZS_MODEL', 'facebook/bart-large-mnli')
 HF_TIMEOUT = float(os.getenv('HUGGINGFACE_TIMEOUT_SEC', '3.5'))
 HF_ENABLED = bool(HF_API_TOKEN)
 
-# Broad condition categories (keep short & distinct for zero-shot model)
+# Comprehensive condition categories covering all major medical specialties
+# 'unknown' is placed first to increase likelihood of selection for ambiguous cases
 HF_CONDITION_LABELS = [
-    'fever', 'respiratory infection', 'cough', 'cold', 'flu', 'asthma', 'breathing difficulty',
-    'allergic reaction', 'skin issue', 'injury', 'burn', 'cut', 'snake bite', 'dog bite',
-    'eye issue', 'dental issue', 'neurological issue', 'headache', 'migraine', 'stomach pain',
-    'diarrhea', 'vomiting', 'nausea', 'dehydration', 'pregnancy related', 'mental health concern',
-    'unknown'
+    'unknown', 'general health concern',
+    # Common symptoms
+    'fever', 'headache', 'pain', 'fatigue',
+    # Respiratory
+    'respiratory infection', 'cough', 'cold', 'flu', 'asthma', 'breathing difficulty', 'pneumonia',
+    # Cardiovascular  
+    'chest pain', 'heart problem', 'blood pressure issue', 'cardiac emergency',
+    # Gastrointestinal
+    'stomach pain', 'diarrhea', 'vomiting', 'nausea', 'constipation', 'acid reflux',
+    # Neurological
+    'neurological issue', 'stroke symptoms', 'seizure', 'dizziness', 'memory problem',
+    # Musculoskeletal
+    'joint pain', 'back pain', 'muscle problem', 'fracture', 'injury',
+    # Dermatological
+    'skin issue', 'rash', 'allergic reaction', 'eczema', 'acne',
+    # Women's health
+    'pregnancy related', 'gynecological issue', 'menstrual problem', 'reproductive health',
+    # Mental health
+    'mental health concern', 'depression', 'anxiety', 'sleep problem',
+    # Endocrine
+    'diabetes', 'thyroid problem', 'hormonal issue',
+    # Infectious diseases
+    'infection', 'viral illness', 'bacterial infection',
+    # Emergency conditions
+    'emergency condition', 'poisoning', 'severe allergic reaction',
+    # Pediatric
+    'pediatric concern', 'child fever', 'infant problem',
+    # Other specialties
+    'eye issue', 'dental issue', 'urinary problem', 'burn', 'cut', 'snake bite', 'dog bite'
 ]
 
 HF_LABEL_ADVICE = {
+    'unknown': 'Monitor symptoms carefully; consult a healthcare professional if they persist, worsen, or you have concerns.',
+    'general health concern': 'Monitor your symptoms, rest, stay hydrated. Consult a healthcare professional if symptoms persist, worsen, or you have specific concerns.',
     'respiratory infection': 'Rest, stay hydrated, monitor fever and breathing. Seek care if breathing worsens or high fever persists.',
     'breathing difficulty': 'Sit upright, loosen tight clothing. If severe or with chest pain, seek emergency medical help immediately.',
     'stomach pain': 'Use light meals and fluids. Severe, persistent, or localized pain (esp. with vomiting / blood) requires medical evaluation.',
@@ -261,8 +583,60 @@ HF_LABEL_ADVICE = {
     'vomiting': 'Small sips of water/ORS. If persistent, bloody, or with severe pain, seek urgent care.',
     'nausea': 'Light bland food, hydration. Persistent or worsening symptoms merit medical advice.',
     'dehydration': 'Increase fluids (ORS, coconut water). If confusion, fainting, or no urination, seek urgent care.',
+    'pain': 'Monitor pain severity and location. Rest, apply heat/ice as appropriate. Severe, sudden, or persistent pain needs medical evaluation.',
+    'fatigue': 'Ensure adequate rest, hydration, and nutrition. Persistent fatigue lasting weeks may indicate underlying conditions requiring medical assessment.',
+    # Cardiovascular
+    'chest pain': 'URGENT: Severe chest pain, especially with arm/jaw pain, sweating, or breathing difficulty requires immediate emergency care. Call ambulance.',
+    'heart problem': 'Heart symptoms (palpitations, chest discomfort, shortness of breath) need prompt medical evaluation. Avoid strenuous activity until assessed.',
+    'blood pressure issue': 'Monitor BP regularly, reduce salt, maintain healthy weight. Very high BP (>180/110) with symptoms needs immediate medical care.',
+    'cardiac emergency': 'EMERGENCY: Call ambulance immediately for severe chest pain, difficulty breathing, or collapse. Do not drive yourself to hospital.',
+    # Respiratory
+    'pneumonia': 'Rest, stay hydrated, seek prompt medical care for fever, productive cough, chest pain. Elderly/immunocompromised need immediate attention.',
+    # Neurological
+    'stroke symptoms': 'EMERGENCY: Face drooping, arm weakness, speech problems = call ambulance IMMEDIATELY. Time is critical for stroke treatment.',
+    'seizure': 'Keep person safe, don\'t restrain, turn to side after seizure. Call emergency if lasts >5 minutes or breathing difficulty.',
+    'dizziness': 'Sit down, stay hydrated, avoid sudden movements. Severe or persistent dizziness with other symptoms needs medical evaluation.',
+    'memory problem': 'Sudden confusion needs immediate evaluation. Gradual memory changes should be discussed with healthcare provider.',
+    # Gastrointestinal  
+    'constipation': 'Increase fiber, fluids, exercise. If severe pain, vomiting, or no bowel movement >3 days, see doctor.',
+    'acid reflux': 'Eat smaller meals, avoid triggers, elevate head while sleeping. Persistent symptoms or difficulty swallowing need evaluation.',
+    # Musculoskeletal
+    'joint pain': 'Rest joint, apply ice/heat, gentle movement. Red, hot, swollen joints or severe limitation needs medical attention.',
+    'back pain': 'Rest, apply heat/ice, gentle stretching. Pain radiating to legs, numbness, or after injury needs prompt evaluation.',
+    'muscle problem': 'Rest, gentle stretching, stay hydrated. Persistent weakness or severe cramping needs medical assessment.',
+    'fracture': 'Don\'t move injured area, apply ice, seek immediate medical care. Call emergency for severe injuries.',
+    # Dermatological
+    'rash': 'Keep clean and dry, avoid scratching. Rapidly spreading rash with fever or breathing problems = emergency.',
+    'eczema': 'Moisturize regularly, avoid triggers, use mild products. Severe flare-ups or signs of infection need medical care.',
+    'acne': 'Gentle cleansing, don\'t pick. Severe or scarring acne should be evaluated by dermatologist.',
+    # Women's health
+    'gynecological issue': 'For vaginal bleeding, pelvic pain, or unusual discharge, please consult a gynecologist promptly. Heavy bleeding or severe pain requires immediate medical attention.',
+    'menstrual problem': 'For irregular periods, excessive bleeding, or severe cramps, track symptoms and consult a healthcare provider. Heavy bleeding soaking pads hourly needs urgent care.',
+    'reproductive health': 'For reproductive health concerns, consult a gynecologist or healthcare provider. Do not ignore unusual symptoms, bleeding, or pain.',
+    # Mental health
+    'depression': 'Reach out to mental health professionals, trusted people, or crisis helplines. Suicidal thoughts require immediate emergency help.',
+    'anxiety': 'Practice deep breathing, grounding techniques. If significantly impacting life or panic attacks, seek professional support.',
+    'sleep problem': 'Maintain regular sleep schedule, avoid screens before bed. Chronic insomnia may indicate underlying conditions.',
+    # Endocrine
+    'diabetes': 'Monitor blood sugar, maintain healthy diet, regular exercise. Extremely high/low blood sugar needs immediate medical attention.',
+    'thyroid problem': 'Symptoms like weight changes, fatigue, heart rate changes need medical evaluation and blood tests.',
+    'hormonal issue': 'Hormonal imbalances affecting mood, weight, or cycles should be evaluated by healthcare provider.',
+    # Infectious diseases
+    'infection': 'Monitor for fever, spreading redness, or worsening symptoms. Severe infections need prompt antibiotic treatment.',
+    'viral illness': 'Rest, fluids, symptom management. Seek care if symptoms worsen, breathing problems, or dehydration.',
+    'bacterial infection': 'May require antibiotics - consult healthcare provider. Don\'t ignore signs of spreading infection.',
+    # Emergency
+    'emergency condition': 'EMERGENCY: Call ambulance immediately. Do not delay for life-threatening symptoms.',
+    'poisoning': 'Call poison control immediately. Do not induce vomiting unless instructed. Bring substance container if safe.',
+    'severe allergic reaction': 'EMERGENCY: Call ambulance for face/throat swelling, breathing difficulty, or rapid pulse after exposure.',
+    # Pediatric
+    'pediatric concern': 'Children need prompt medical attention for concerning symptoms. When in doubt, consult pediatrician.',
+    'child fever': 'Infants <3 months with fever need immediate care. Monitor hydration and breathing in older children.',
+    'infant problem': 'Babies <3 months need immediate medical evaluation for any concerning symptoms.',
+    # Other conditions
     'allergic reaction': 'Remove trigger, monitor breathing. Swelling of face/throat or breathing issues = emergency.',
     'skin issue': 'Keep area clean and dry. Spreading redness, pus, or fever needs doctor review.',
+    'urinary problem': 'Increase fluids for mild symptoms. Severe pain, blood, or inability to urinate needs immediate care.',
     'injury': 'Apply clean pressure for bleeding, immobilize if fracture suspected. Seek care for deep wounds or severe pain.',
     'burn': 'Cool running water 10 mins. Do not apply toothpaste/oil. Large or deep burns need emergency care.',
     'cut': 'Clean with water, apply antiseptic, cover. If deep or bleeding won’t stop, seek care.',
@@ -279,8 +653,7 @@ HF_LABEL_ADVICE = {
     'cough': 'Warm fluids, steam inhalation. Persistent, bloody, or breath-limiting cough → doctor.',
     'cold': 'Rest, fluids, symptomatic relief. High fever or breathing issues → medical exam.',
     'flu': 'Rest, fluids, monitor high fever and breathing. High-risk groups should consult early.',
-    'asthma': 'Use prescribed inhaler, monitor breathing. If not improving or severe, seek urgent care.',
-    'unknown': 'Monitor symptoms carefully; consult a healthcare professional if they persist, worsen, or you have concerns.'
+    'asthma': 'Use prescribed inhaler, monitor breathing. If not improving or severe, seek urgent care.'
 }
 
 _HF_CACHE = {}
@@ -311,8 +684,20 @@ def hf_zero_shot_categories(text: str, top_k: int = 3):
         labels = data.get('labels') or []
         scores = data.get('scores') or []
         paired = sorted(zip(labels, scores), key=lambda x: x[1], reverse=True)
-        # Filter by minimal confidence threshold
-        filtered = [(l, s) for l, s in paired if s >= 0.15][:top_k]
+        # Filter by confidence threshold - be more selective
+        filtered = [(l, s) for l, s in paired if s >= 0.25][:top_k]
+        
+        # If no high-confidence matches and top score is for injury/cut, prefer unknown/general
+        if filtered and len(filtered) >= 1:
+            top_label, top_score = filtered[0]
+            # If the top match is injury/cut with low-medium confidence, prefer generic labels
+            if top_label in ['injury', 'cut', 'burn'] and top_score < 0.4:
+                # Check if unknown or general health concern have reasonable scores
+                for label, score in paired:
+                    if label in ['unknown', 'general health concern'] and score >= 0.15:
+                        filtered = [(label, score)] + [item for item in filtered if item[0] != label]
+                        break
+        
         _HF_CACHE[key] = filtered
         return filtered
     except Exception:
@@ -352,13 +737,21 @@ def heuristic_detect_indic(text: str) -> str:
         if hits >= 2 or (hits >= 1 and len(tokens) <= 6):
             return 'hi'
     # Step 3: Fallback to langdetect result but constrain
-    if TRANSLATION_AVAILABLE:
-        try:
-            detected = detect(lower)
-            if detected in SUPPORTED_INDIC_LANGS:
-                return detected
-        except Exception:
-            pass
+    # Disabled langdetect due to issues with special characters
+    # if TRANSLATION_AVAILABLE:
+    #     try:
+    #         # Clean the text first to avoid langdetect issues
+    #         cleaned_text = re.sub(r'[^\w\s]', ' ', lower)
+    #         cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+    #         
+    #         if len(cleaned_text) > 3:  # Only detect if we have sufficient text
+    #             detected = detect(cleaned_text)
+    #             if detected in SUPPORTED_INDIC_LANGS:
+    #                 return detected
+    #     except Exception as e:
+    #         # If langdetect fails, just return English
+    #         logging.debug(f'Language detection failed: {e}')
+    #         pass
     return 'en'
 
 def assign_doctor_for_specialty(spec: str):
@@ -668,14 +1061,14 @@ def login():
     
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Personalized chat endpoint.
+    """Enhanced personalized chat endpoint with greeting detection and improved medical responses.
     Expects JSON body: { "uid": "<user uid>", "message": "<user message>" }
-    Steps:
-      1. Fetch user's past symptoms from health_history.
-      2. Detect if current message mentions any past symptom (recurrence).
-      3. Match keyword advice from responses data.
-      4. If recurring and advice found, prepend personalized notice.
-      5. Return advice or default fallback.
+    Features:
+      1. Greeting and conversation detection
+      2. Enhanced medical condition matching
+      3. Improved response accuracy with confidence scoring
+      4. Personalized responses based on health history
+      5. Multi-language support
     """
     body = request.get_json() or {}
     uid = body.get('uid')
@@ -702,9 +1095,60 @@ def chat():
                         translated_inbound = True
                     else:
                         original_language = 'en'
-            except Exception:
+            except Exception as e:
+                logging.warning(f'Translation failed: {e}')
                 original_language = 'en'
                 translated_inbound = False
+
+        # --- Enhanced Greeting & Conversation Detection ---
+        user_message_lower = user_message.lower().strip()
+        
+        # Check for greetings and common conversational patterns
+        greeting_response = detect_greeting_or_conversation(user_message_lower, uid)
+        if greeting_response:
+            # Store greeting interaction in session
+            if db is not None and uid:
+                try:
+                    sessions_ref = db.collection('users').document(uid).collection('chat_sessions')
+                    if not session_id:
+                        new_ref = sessions_ref.document()
+                        new_ref.set({
+                            'created_at': firestore.SERVER_TIMESTAMP,
+                            'last_updated': firestore.SERVER_TIMESTAMP,
+                            'major_issue': 'greeting/conversation',
+                            'message_count': 0,
+                            'title': 'General Conversation',
+                            'title_auto': True
+                        })
+                        session_id = new_ref.id
+                    
+                    if session_id:
+                        sess_doc_ref = sessions_ref.document(session_id)
+                        msg_coll = sess_doc_ref.collection('messages')
+                        now_server = firestore.SERVER_TIMESTAMP
+                        msg_coll.add({'role': 'user', 'text': user_message, 'ts': now_server})
+                        msg_coll.add({'role': 'bot', 'text': greeting_response, 'ts': now_server})
+                        sess_doc_ref.set({'last_updated': firestore.SERVER_TIMESTAMP, 'message_count': firestore.Increment(2)}, merge=True)
+                except Exception:
+                    pass
+            
+            # Translate response back if needed
+            final_response = greeting_response
+            if TRANSLATION_AVAILABLE and original_language in SUPPORTED_INDIC_LANGS:
+                try:
+                    final_response = GoogleTranslator(source='en', target=original_language).translate(greeting_response)
+                except Exception:
+                    pass
+            
+            return jsonify({
+                'message': final_response,
+                'language': original_language,
+                'translatedInbound': translated_inbound,
+                'session_id': session_id,
+                'matched_issues': ['conversation'],
+                'conversation_type': 'greeting',
+                'medical_sources': []
+            }), 200
 
         # --- Step 1: Fetch User's Health History (symptoms only) ---
         past_symptoms = []
@@ -727,41 +1171,115 @@ def chat():
                 is_recurring = True
                 break
 
-        # --- Step 3: Multi-issue Keyword Logic with synonym normalization & simple caching ---
+        # --- Step 3: Enhanced Multi-issue Keyword Logic with improved matching ---
         advice = None
         matched_entries = []  # list of (entry, matched_keywords_set)
         matched_issues_confidence = []
+        confidence_scores = []
+        
         cache_key = None
         if session_id:
             cache_key = f"sess:{session_id}:{hash(user_message_lower)}"
         else:
             cache_key = f"uid:{uid}:{hash(user_message_lower)}"
+        
         if cache_key in SESSION_MATCH_CACHE:
-            matched_entries = SESSION_MATCH_CACHE[cache_key]['matched_entries']
+            cached_data = SESSION_MATCH_CACHE[cache_key]
+            matched_entries = cached_data['matched_entries']
+            confidence_scores = cached_data.get('confidence_scores', [])
         else:
             try:
+                # Enhanced keyword matching with scoring
                 if isinstance(responses, dict):
                     for keyword, text in responses.items():
-                        if keyword and normalize_synonyms(keyword.lower()) in user_message_lower:
-                            matched_entries.append(({ 'advice': text, 'keywords': [keyword] }, { keyword.lower() }))
+                        if keyword:
+                            normalized_keyword = normalize_synonyms(keyword.lower())
+                            if normalized_keyword in user_message_lower:
+                                # Calculate match confidence based on keyword length and context
+                                confidence = calculate_match_confidence(keyword, user_message_lower, user_message)
+                                matched_entries.append(({ 'advice': text, 'keywords': [keyword] }, { keyword.lower() }))
+                                confidence_scores.append(confidence)
                 elif isinstance(responses, list):
                     for entry in responses:
                         if not isinstance(entry, dict):
                             continue
                         kws = entry.get('keywords') or []
                         hit = set()
+                        match_confidence = 0.0
+                        
                         for kw in kws:
                             if not isinstance(kw, str):
                                 continue
                             kwl = normalize_synonyms(kw.lower().strip())
                             if kwl and kwl in user_message_lower:
                                 hit.add(kwl)
+                                # Calculate confidence based on keyword specificity and match quality
+                                kw_confidence = calculate_match_confidence(kw, user_message_lower, user_message)
+                                match_confidence = max(match_confidence, kw_confidence)
+                        
                         if hit:
                             matched_entries.append((entry, hit))
+                            confidence_scores.append(match_confidence)
+                            
             except Exception as kw_err:
                 logging.warning(f'Keyword matching failed: {kw_err}')
-            SESSION_MATCH_CACHE[cache_key] = { 'matched_entries': matched_entries }
+            
+            SESSION_MATCH_CACHE[cache_key] = { 
+                'matched_entries': matched_entries,
+                'confidence_scores': confidence_scores
+            }
 
+        # Enhanced detection for critical medical terms
+        if not matched_entries:
+            critical_terms = {
+                # Emergency conditions
+                'chest pain': 'cardiac emergency',
+                'heart attack': 'cardiac emergency', 
+                'stroke': 'stroke symptoms',
+                'seizure': 'seizure',
+                'unconscious': 'emergency condition',
+                'severe allergic reaction': 'severe allergic reaction',
+                'anaphylaxis': 'severe allergic reaction',
+                'poisoning': 'poisoning',
+                'overdose': 'poisoning',
+                'choking': 'emergency condition',
+                # Women's health
+                'vaginal bleeding': 'gynecological issue',
+                'vaginal discharge': 'gynecological issue', 
+                'bleeding': 'vaginal bleeding' if any(term in user_message_lower for term in ['vaginal', 'period', 'menstrual']) else None,
+                'pelvic pain': 'gynecological issue',
+                'period': 'menstrual problem',
+                'menstrual': 'menstrual problem',
+                'irregular period': 'menstrual problem',
+                'heavy period': 'menstrual problem',
+                'missed period': 'reproductive health',
+                # Mental health
+                'suicidal': 'depression',
+                'suicide': 'depression',
+                'depression': 'depression',
+                'anxiety': 'anxiety',
+                'panic attack': 'anxiety',
+                # Other critical terms
+                'diabetes': 'diabetes',
+                'blood sugar': 'diabetes',
+                'fracture': 'fracture',
+                'broken bone': 'fracture',
+                'memory loss': 'memory problem',
+                'confusion': 'memory problem'
+            }
+            
+            for term, category in critical_terms.items():
+                if category and term in user_message_lower:
+                    # Create a synthetic entry for this critical term
+                    advice_text = HF_LABEL_ADVICE.get(category, HF_LABEL_ADVICE['unknown'])
+                    entry = {
+                        'advice': advice_text,
+                        'keywords': [term],
+                        'source': 'critical_detection'
+                    }
+                    matched_entries.append((entry, {term}))
+                    break
+        
         combined = []
         matched_issues = []
         zero_shot_used = False
@@ -769,71 +1287,213 @@ def chat():
         if not matched_entries:
             zs_results = hf_zero_shot_categories(user_message_lower)
             if zs_results:
-                zero_shot_used = True
-                for label, score in zs_results[:3]:
-                    label_norm = label.lower()
-                    advice_text = HF_LABEL_ADVICE.get(label_norm, HF_LABEL_ADVICE['unknown'])
-                    entry = {
-                        'advice': advice_text,
-                        'keywords': [label_norm],
-                        'source': 'zero_shot',
-                        '_zs_confidence': float(score)
-                    }
-                    matched_entries.append((entry, {label_norm}))
+                # Only use zero-shot results if we have reasonably confident matches
+                # or if the top match is a generic/safe category
+                top_label, top_score = zs_results[0]
+                use_zs = (top_score >= 0.25 or 
+                         top_label in ['unknown', 'general health concern', 'fever', 'headache', 'cough', 'cold', 'gynecological issue', 'menstrual problem', 'reproductive health'] or
+                         any(score >= 0.3 for _, score in zs_results))
+                
+                if use_zs:
+                    zero_shot_used = True
+                    for label, score in zs_results[:3]:
+                        label_norm = label.lower()
+                        advice_text = HF_LABEL_ADVICE.get(label_norm, HF_LABEL_ADVICE['unknown'])
+                        entry = {
+                            'advice': advice_text,
+                            'keywords': [label_norm],
+                            'source': 'zero_shot',
+                            '_zs_confidence': float(score)
+                        }
+                        matched_entries.append((entry, {label_norm}))
         if matched_entries:
-            def rank_item(tup):
-                entry, hitset = tup
-                longest = max((len(h) for h in hitset), default=0)
-                return (-len(hitset), -longest)
-            matched_entries.sort(key=rank_item)
-            for entry, hitset in matched_entries[:3]:
+            # Enhanced ranking with confidence scores
+            if confidence_scores and len(confidence_scores) == len(matched_entries):
+                # Sort by confidence score primarily, then by keyword match quality
+                combined_ranking = list(zip(matched_entries, confidence_scores))
+                combined_ranking.sort(key=lambda x: (-x[1], -len(x[0][1]) if isinstance(x[0], tuple) else 0))
+                matched_entries = [item[0] for item in combined_ranking]
+                confidence_scores = [item[1] for item in combined_ranking]
+            else:
+                # Fallback to original ranking method
+                def rank_item(tup):
+                    entry, hitset = tup
+                    longest = max((len(h) for h in hitset), default=0)
+                    return (-len(hitset), -longest)
+                matched_entries.sort(key=rank_item)
+            
+            # Process top matches with enhanced response generation
+            for i, (entry, hitset) in enumerate(matched_entries[:3]):
                 raw_advice = (entry.get('advice') or '').strip()
                 if not raw_advice:
                     continue
+                
                 source_kws = [normalize_synonyms(k.lower().strip()) for k in (entry.get('keywords') or []) if isinstance(k,str)]
                 if hitset:
                     label = max(hitset, key=len)
                 elif source_kws:
                     label = source_kws[0]
                 else:
-                    label = 'issue'
-                denom = max(len(source_kws), len(hitset), 1)
-                avg_len = sum(len(h) for h in hitset)/max(1,len(hitset))
-                confidence = min(0.99, (len(hitset)/denom) * (0.6 + 0.4 * min(1.0, avg_len/12)))
+                    label = 'health concern'
+                
+                # Use calculated confidence if available
+                if i < len(confidence_scores):
+                    confidence = confidence_scores[i]
+                else:
+                    # Fallback confidence calculation
+                    denom = max(len(source_kws), len(hitset), 1)
+                    avg_len = sum(len(h) for h in hitset)/max(1,len(hitset))
+                    confidence = min(0.99, (len(hitset)/denom) * (0.6 + 0.4 * min(1.0, avg_len/12)))
+                
                 # Override/blend with zero-shot confidence if present
                 if '_zs_confidence' in entry:
                     confidence = max(confidence, float(entry.get('_zs_confidence') or 0.0))
+                
                 matched_issues.append(label)
                 matched_issues_confidence.append((label, confidence))
-                if entry.get('source') == 'zero_shot':
-                    combined.append(f"<li><strong>{label.title()}</strong> <em style='font-size:0.75em;color:#666'>(AI inferred)</em><br>{raw_advice}</li>")
+                
+                # Enhanced advice with confidence indicators
+                enhanced_raw_advice = raw_advice
+                
+                # Add confidence indicators
+                if confidence < 0.3:
+                    confidence_indicator = " <em style='color:#ff9800;font-size:0.8em'>(Low confidence - please verify with a healthcare professional)</em>"
+                elif confidence < 0.6:
+                    confidence_indicator = " <em style='color:#2196F3;font-size:0.8em'>(Moderate confidence)</em>"
                 else:
-                    combined.append(f"<li><strong>{label.title()}</strong><br>{raw_advice}</li>")
+                    confidence_indicator = " <em style='color:#4CAF50;font-size:0.8em'>(High confidence)</em>"
+                
+                # Add emergency warnings for critical symptoms
+                critical_keywords = ['chest pain', 'heart attack', 'stroke', 'seizure', 'poisoning', 'severe allergic reaction', 'breathing difficulty']
+                is_emergency = any(kw in label.lower() or kw in raw_advice.lower() for kw in critical_keywords)
+                
+                if is_emergency:
+                    enhanced_raw_advice = f"🚨 <strong>EMERGENCY ALERT:</strong> {raw_advice}<br><br>⚡ <strong>If this is a medical emergency, call emergency services immediately!</strong>"
+                
+                if entry.get('source') == 'zero_shot':
+                    combined.append(f"<li><strong>{label.title()}</strong> <em style='font-size:0.75em;color:#666'>(AI inferred)</em>{confidence_indicator}<br>{enhanced_raw_advice}</li>")
+                else:
+                    combined.append(f"<li><strong>{label.title()}</strong>{confidence_indicator}<br>{enhanced_raw_advice}</li>")
+            
             if combined:
-                advice = "<div><p><strong>Multiple concerns noted:</strong></p><ul>" + "".join(combined) + "</ul></div>"
+                if len(combined) > 1:
+                    advice = "<div><p><strong>Multiple health concerns identified:</strong></p><ul>" + "".join(combined) + "</ul></div>"
+                else:
+                    # Single issue - cleaner presentation
+                    advice = combined[0].replace('<li><strong>', '').replace('</strong>', '').replace('</li>', '').replace('<br>', '\n\n')
+                    advice = f"<div>{advice}</div>"
 
-        # --- Step 3b: Intelligent Fallback if no predefined advice matched ---
+        # --- Step 3b: Enhanced Intelligent Fallback if no predefined advice matched ---
         fallback_summary = None
         if not advice:
-            # Extract candidate symptom tokens (simple heuristic)
-            body_terms = {'head','headache','stomach','abdominal','chest','throat','eye','eyes','ear','skin','back','leg','arm','hand','foot','feet','knee','nose','breath','breathing','cough','fever','vomiting','nausea','diarrhea','pain','pains'}
+            # Enhanced symptom and body part detection
+            body_terms = {
+                'head','headache','skull','brain','scalp',
+                'stomach','abdominal','belly','abdomen','gut','tummy',
+                'chest','lungs','heart','breast','ribs',
+                'throat','neck','voice','larynx','pharynx',
+                'eye','eyes','vision','sight','eyelid',
+                'ear','ears','hearing','eardrum',
+                'skin','rash','itch','dermatitis','eczema',
+                'back','spine','spinal','lumbar','vertebrae',
+                'leg','legs','knee','knees','ankle','foot','feet','toe','toes',
+                'arm','arms','shoulder','elbow','wrist','hand','hands','finger','fingers',
+                'mouth','lips','tongue','teeth','gums','jaw',
+                'nose','nostril','sinus','nasal',
+                'breath','breathing','lungs','airways'
+            }
+            
+            symptom_terms = {
+                'pain','ache','aching','hurt','hurting','sore','tender',
+                'fever','temperature','hot','burning','chills',
+                'cough','coughing','wheezing','sneezing',
+                'nausea','vomiting','vomit','throwing up','sick',
+                'diarrhea','constipation','bowel','stool',
+                'dizziness','dizzy','lightheaded','faint','fainting',
+                'tired','fatigue','exhausted','weak','weakness',
+                'swelling','swollen','inflammation','bloated',
+                'bleeding','blood','bruise','bruising',
+                'infection','infected','pus','discharge'
+            }
+            
             tokens = re.findall(r'[a-zA-Z]{3,}', user_message_lower)
-            salient = []
-            for i,tok in enumerate(tokens):
+            body_parts = []
+            symptoms = []
+            
+            for i, tok in enumerate(tokens):
                 if tok in body_terms:
-                    # capture context window (token itself + preceding adjective if any)
-                    prev = tokens[i-1] if i>0 else ''
-                    phrase = f"{prev} {tok}".strip()
-                    salient.append(phrase)
-            salient = list(dict.fromkeys(salient))[:5]
-            if salient:
-                fallback_summary = ", ".join(salient)
-            # Provide generic triage-style advice
-            base_fallback = "I couldn't find a direct match in my guidance list. "
-            if fallback_summary:
-                base_fallback += f"You mentioned: {fallback_summary}. "
-            base_fallback += ("Monitor your symptoms, rest, stay hydrated, and seek professional care if they worsen, persist beyond a couple of days, involve severe pain, breathing difficulty, bleeding, or high fever.")
+                    prev = tokens[i-1] if i > 0 else ''
+                    next_tok = tokens[i+1] if i < len(tokens)-1 else ''
+                    context = f"{prev} {tok} {next_tok}".strip()
+                    body_parts.append(context if len(context.split()) <= 3 else tok)
+                
+                if tok in symptom_terms:
+                    prev = tokens[i-1] if i > 0 else ''
+                    next_tok = tokens[i+1] if i < len(tokens)-1 else ''
+                    context = f"{prev} {tok} {next_tok}".strip()
+                    symptoms.append(context if len(context.split()) <= 3 else tok)
+            
+            # Remove duplicates while preserving order
+            body_parts = list(dict.fromkeys(body_parts))[:3]
+            symptoms = list(dict.fromkeys(symptoms))[:3]
+            
+            # Enhanced fallback advice based on detected elements
+            base_fallback = "I understand you're experiencing health concerns. "
+            
+            if body_parts and symptoms:
+                base_fallback += f"Based on your description mentioning {', '.join(body_parts)} and symptoms like {', '.join(symptoms)}, here's some general guidance:\n\n"
+            elif body_parts:
+                base_fallback += f"I notice you mentioned issues with {', '.join(body_parts)}. "
+            elif symptoms:
+                base_fallback += f"I see you're experiencing {', '.join(symptoms)}. "
+            
+            # Provide specific advice based on detected symptoms
+            emergency_symptoms = ['chest pain', 'breathing', 'seizure', 'unconscious', 'severe pain', 'blood', 'poisoning']
+            has_emergency = any(term in user_message_lower for term in emergency_symptoms)
+            
+            if has_emergency:
+                base_fallback += "\n🚨 **IMPORTANT**: Based on your symptoms, this could require immediate medical attention. If you're experiencing severe symptoms, difficulty breathing, chest pain, or any life-threatening conditions, please call emergency services immediately or go to the nearest emergency room.\n\n"
+            
+            # General health advice
+            base_fallback += "**General recommendations:**\n"
+            base_fallback += "• Monitor your symptoms closely and note any changes\n"
+            base_fallback += "• Rest and stay well-hydrated\n"
+            base_fallback += "• Avoid self-medication without proper guidance\n"
+            base_fallback += "• Maintain good hygiene and nutrition\n\n"
+            
+            base_fallback += "**Seek immediate medical care if you experience:**\n"
+            base_fallback += "• Severe or worsening pain\n"
+            base_fallback += "• High fever (over 102°F/39°C)\n"
+            base_fallback += "• Difficulty breathing or chest pain\n"
+            base_fallback += "• Persistent vomiting or signs of dehydration\n"
+            base_fallback += "• Any bleeding or injury\n"
+            base_fallback += "• Symptoms that persist more than 2-3 days\n\n"
+            
+            base_fallback += "💡 **Remember**: I can provide general health information, but I cannot replace professional medical diagnosis and treatment. When in doubt, always consult with a qualified healthcare provider."
+            
             advice = base_fallback
+
+        # --- Step 3c: Enhance with MedlinePlus Medical Knowledge ---
+        medlineplus_enhancement = None
+        medical_sources = []
+        try:
+            if MEDLINEPLUS_AVAILABLE and matched_issues:
+                # Use detected conditions for enhancement
+                enhancement = enhance_chatbot_response(user_message, matched_issues)
+                if enhancement.get('confidence_boost') and enhancement.get('authoritative_summary'):
+                    medlineplus_enhancement = enhancement['authoritative_summary']
+                    medical_sources = enhancement.get('medical_sources', [])
+                    
+                    # Append authoritative information to advice
+                    if medlineplus_enhancement:
+                        advice += f"\n\n<div style='border-left: 3px solid #2196F3; padding-left: 10px; margin: 10px 0;'>"
+                        advice += f"<strong>📚 Medical Information (MedlinePlus):</strong><br>"
+                        advice += f"{medlineplus_enhancement}"
+                        if medical_sources and medical_sources[0].get('url'):
+                            advice += f"<br><br><a href='{medical_sources[0]['url']}' target='_blank' style='color: #2196F3;'>→ Read more on MedlinePlus</a>"
+                        advice += "</div>"
+        except Exception as e:
+            logging.warning(f'MedlinePlus enhancement failed: {e}')
 
         # --- Step 4: Personalize the Response ---
         if advice and is_recurring:
@@ -844,7 +1504,15 @@ def chat():
 
         # --- Step 5: Return the Final Response ---
         if not advice:
-            advice = "I'm sorry, I don't have information on that. Please consult a doctor for further help."
+            # Friendly fallback for unclear or unsupported queries
+            if detect_greeting_or_conversation(user_message_lower, uid):
+                advice = detect_greeting_or_conversation(user_message_lower, uid)
+            else:
+                advice = (
+                    "I'm here to help with health and wellness questions! "
+                    "If you have a health concern, symptom, or want to know about healthy living, just ask. "
+                    "For non-health topics, I may not be able to help, but I'm always here for your health queries."
+                )
         # --- Optional Translation (Outbound) ---
         if TRANSLATION_AVAILABLE and original_language in SUPPORTED_INDIC_LANGS:
             try:
@@ -890,12 +1558,17 @@ def chat():
             'matched_issues': matched_issues,
             'issue_confidence': [ {'issue': i, 'confidence': round(c,4)} for i,c in matched_issues_confidence ],
             'fallback_used': (not bool(matched_issues)) and (not zero_shot_used),
-            'zero_shot_used': zero_shot_used
+            'zero_shot_used': zero_shot_used,
+            'medlineplus_enhanced': bool(medlineplus_enhancement),
+            'medical_sources': medical_sources[:2] if medical_sources else []  # Limit to 2 sources for response size
         }), 200
 
     except Exception as e:
+        import traceback
         logging.exception('Chat processing failure')
-        return jsonify({'error': 'Failed to process chat', 'details': str(e)}), 500
+        error_details = f"{type(e).__name__}: {str(e)}"
+        logging.error(f"Full traceback: {traceback.format_exc()}")
+        return jsonify({'error': 'Failed to process chat', 'details': error_details}), 500
 
 @app.route('/analyze_chat_session', methods=['POST'])
 @cross_origin(origins='*', methods=['POST','OPTIONS'], allow_headers=['Content-Type','Authorization','X-Requested-With'])
@@ -1084,6 +1757,142 @@ def analyze_chat_session():
         'record_id': record_id,
         'mode': 'analysis'
     }), 200
+
+# ---------------- MedlinePlus Medical Information Endpoints ----------------
+@app.route('/search_medical_info', methods=['POST'])
+@cross_origin(origins='*', methods=['POST','OPTIONS'], allow_headers=['Content-Type','Authorization','X-Requested-With'])
+def search_medical_info():
+    """
+    Search authoritative medical information from MedlinePlus
+    Expects JSON: {
+        "query": "search term",
+        "max_results": 5 (optional, default 3)
+    }
+    Returns medical information from NIH MedlinePlus database
+    """
+    try:
+        if not MEDLINEPLUS_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'query': None,
+                'results': [],
+                'message': 'MedlinePlus integration not available. Medical information cannot be retrieved at this time.',
+                'source': None,
+                'disclaimer': 'This information is provided for educational purposes only and should not replace professional medical advice.'
+            }), 200
+
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'query': None,
+                'results': [],
+                'message': 'Invalid JSON in request body.',
+                'source': None,
+                'disclaimer': 'This information is provided for educational purposes only and should not replace professional medical advice.'
+            }), 200
+
+        query = data.get('query', '').strip()
+        if not query:
+            return jsonify({
+                'success': False,
+                'query': None,
+                'results': [],
+                'message': 'Query parameter is required.',
+                'source': None,
+                'disclaimer': 'This information is provided for educational purposes only and should not replace professional medical advice.'
+            }), 200
+
+        max_results = min(data.get('max_results', 3), 10)  # Limit to prevent abuse
+
+        # Get medical information from MedlinePlus
+        try:
+            medical_info = get_medical_info(query, max_results)
+        except Exception as e:
+            logging.exception('MedlinePlus get_medical_info failed')
+            medical_info = []
+
+        if not medical_info:
+            return jsonify({
+                'success': True,
+                'query': query,
+                'results': [],
+                'message': 'No medical information found for this query. Please try a different search term or consult a healthcare professional.',
+                'source': 'MedlinePlus (NIH)',
+                'disclaimer': 'This information is provided for educational purposes only and should not replace professional medical advice.'
+            }), 200
+
+        return jsonify({
+            'success': True,
+            'query': query,
+            'results': medical_info,
+            'source': 'MedlinePlus (NIH)',
+            'disclaimer': 'This information is provided for educational purposes only and should not replace professional medical advice.'
+        }), 200
+
+    except Exception as e:
+        logging.exception('Medical info search failed (outer catch)')
+        return jsonify({
+            'success': False,
+            'query': None,
+            'results': [],
+            'message': 'An unexpected error occurred while searching for medical information.',
+            'details': str(e),
+            'source': None,
+            'disclaimer': 'This information is provided for educational purposes only and should not replace professional medical advice.'
+        }), 200
+
+@app.route('/get_condition_info', methods=['POST'])
+@cross_origin(origins='*', methods=['POST','OPTIONS'], allow_headers=['Content-Type','Authorization','X-Requested-With'])
+def get_condition_info():
+    """
+    Get detailed information about a specific medical condition
+    Expects JSON: {
+        "condition": "diabetes",
+        "include_genetics": false (optional)
+    }
+    Returns comprehensive medical information
+    """
+    try:
+        if not MEDLINEPLUS_AVAILABLE:
+            return jsonify({'error': 'MedlinePlus integration not available'}), 503
+            
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Invalid JSON in request body'}), 400
+        
+        condition = data.get('condition', '').strip()
+        if not condition:
+            return jsonify({'error': 'Condition parameter is required'}), 400
+        
+        include_genetics = data.get('include_genetics', False)
+        
+        # Get basic medical information
+        medical_info = get_medical_info(condition, max_results=3)
+        
+        response_data = {
+            'success': True,
+            'condition': condition,
+            'medical_info': medical_info,
+            'source': 'MedlinePlus (NIH)',
+            'genetics_info': None
+        }
+        
+        # Optionally include genetics information
+        if include_genetics:
+            try:
+                # Convert condition to URL-friendly format
+                condition_slug = condition.lower().replace(' ', '-').replace('_', '-')
+                genetics_info = medical_enhancer.medlineplus.get_genetic_condition_info(condition_slug)
+                response_data['genetics_info'] = genetics_info
+            except Exception as e:
+                logging.warning(f'Failed to get genetics info for {condition}: {e}')
+        
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        logging.exception('Condition info lookup failed')
+        return jsonify({'error': 'Failed to get condition information', 'details': str(e)}), 500
 
 # ---------------- Health Record Endpoints ----------------
 @app.route('/add_health_record', methods=['POST'])
@@ -1403,6 +2212,207 @@ def doctor_appointments():
         return jsonify({'success': True, 'count': len(matched), 'appointments': matched, 'doctor_name': doctor_name}), 200
     except Exception:
         return jsonify({'error': 'Failed to gather doctor appointments'}), 500
+
+@app.route('/search_external_doctors', methods=['POST'])
+def search_external_doctors():
+    """Search doctors from external platforms (Lybrate, Practo)
+    JSON body: { 
+        "specialty": "cardiology", 
+        "location": "Mumbai", 
+        "filters": {
+            "min_experience": 5,
+            "min_rating": 4.0,
+            "consultation_type": "online",
+            "max_fee": 1000
+        }
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        specialty = data.get('specialty', '').strip()
+        location = data.get('location', '').strip()
+        filters = data.get('filters', {})
+        
+        if not specialty:
+            return jsonify({'error': 'Specialty is required'}), 400
+        
+        # Start with local doctors
+        local_doctors = DOCTOR_DIRECTORY.get(specialty.lower(), [])
+        formatted_local = [{
+            'name': doc,
+            'specialty': specialty,
+            'source': 'local',
+            'available_modes': ['video', 'phone'],
+            'rating': 4.5,  # Default rating for local doctors
+            'consultation_fee': 500  # Default fee
+        } for doc in local_doctors]
+        
+        external_doctors = []
+        
+        # Search external platforms if available
+        if healthcare_integrator:
+            try:
+                external_doctors = healthcare_integrator.unified_doctor_search(
+                    specialty=specialty,
+                    location=location,
+                    filters=filters
+                )
+            except Exception as e:
+                logging.error(f"External doctor search failed: {e}")
+        
+        # Combine and rank results
+        all_doctors = formatted_local + external_doctors
+        
+        # Apply filters
+        if filters.get('max_fee'):
+            all_doctors = [d for d in all_doctors if d.get('consultation_fee', 0) <= filters['max_fee']]
+        
+        if filters.get('min_rating'):
+            all_doctors = [d for d in all_doctors if d.get('rating', 0) >= filters['min_rating']]
+        
+        # Sort by rating and source preference
+        all_doctors.sort(key=lambda x: (
+            x.get('rating', 0),
+            1 if x.get('source') in ['lybrate', 'practo'] else 0  # Prefer external platforms
+        ), reverse=True)
+        
+        return jsonify({
+            'doctors': all_doctors[:20],  # Return top 20
+            'total_found': len(all_doctors),
+            'sources_used': list(set([d.get('source', 'unknown') for d in all_doctors]))
+        })
+        
+    except Exception as e:
+        logging.error(f'Error in search_external_doctors: {e}')
+        return jsonify({'error': 'Failed to search doctors'}), 500
+
+@app.route('/get_lab_tests', methods=['POST'])
+def get_lab_tests():
+    """Get available lab tests from external platforms
+    JSON body: {
+        "location": "Mumbai",
+        "category": "blood",  # Optional: blood, urine, cardiac, etc.
+        "home_collection": true
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        location = data.get('location', '').strip()
+        category = data.get('category', '').strip()
+        home_collection = data.get('home_collection', False)
+        
+        if not location:
+            return jsonify({'error': 'Location is required'}), 400
+        
+        lab_tests = []
+        
+        # Get lab tests from Practo if available
+        if healthcare_integrator and healthcare_integrator.practo:
+            try:
+                tests = healthcare_integrator.practo.get_available_lab_tests(
+                    location=location,
+                    test_category=category
+                )
+                if home_collection:
+                    tests = [t for t in tests if t.get('home_collection', False)]
+                lab_tests.extend(tests)
+            except Exception as e:
+                logging.error(f"Lab tests search failed: {e}")
+        
+        # Sort by popularity and price
+        lab_tests.sort(key=lambda x: (x.get('price', 999999), -len(x.get('name', ''))))
+        
+        return jsonify({
+            'lab_tests': lab_tests,
+            'categories': ['blood', 'urine', 'cardiac', 'diabetes', 'thyroid', 'liver', 'kidney'],
+            'total_found': len(lab_tests)
+        })
+        
+    except Exception as e:
+        logging.error(f'Error in get_lab_tests: {e}')
+        return jsonify({'error': 'Failed to get lab tests'}), 500
+
+@app.route('/book_external_appointment', methods=['POST'])
+def book_external_appointment():
+    """Book appointment with external doctor (Lybrate/Practo)
+    JSON body: {
+        "doctor_id": "doc123",
+        "platform": "lybrate",  # or "practo"
+        "patient_info": {
+            "name": "John Doe",
+            "phone": "+91xxxxxxxxxx",
+            "email": "john@example.com",
+            "age": 30,
+            "gender": "male"
+        },
+        "appointment_details": {
+            "date": "2025-10-15",
+            "time": "10:00 AM",
+            "symptoms": "chest pain",
+            "consultation_mode": "video"
+        }
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        doctor_id = data.get('doctor_id', '').strip()
+        platform = data.get('platform', '').strip().lower()
+        patient_info = data.get('patient_info', {})
+        appointment_details = data.get('appointment_details', {})
+        
+        if not doctor_id or not platform or not patient_info:
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        booking_result = {'success': False}
+        
+        if platform == 'lybrate' and healthcare_integrator and healthcare_integrator.lybrate:
+            try:
+                booking_result = healthcare_integrator.lybrate.book_consultation(
+                    doctor_id=doctor_id,
+                    patient_info=patient_info,
+                    slot_time=f"{appointment_details.get('date')} {appointment_details.get('time')}",
+                    consultation_type=appointment_details.get('consultation_mode', 'video')
+                )
+            except Exception as e:
+                booking_result = {'success': False, 'error': str(e)}
+                
+        elif platform == 'practo' and healthcare_integrator and healthcare_integrator.practo:
+            try:
+                booking_result = healthcare_integrator.practo.book_appointment(
+                    doctor_id=doctor_id,
+                    patient_info=patient_info,
+                    appointment_details=appointment_details
+                )
+            except Exception as e:
+                booking_result = {'success': False, 'error': str(e)}
+        else:
+            return jsonify({'error': f'Platform {platform} not supported or not configured'}), 400
+        
+        # Store booking in local database for tracking
+        if booking_result.get('success') and db is not None:
+            try:
+                uid = patient_info.get('uid') or 'external_patient'
+                booking_record = {
+                    'external_booking_id': booking_result.get('booking_id') or booking_result.get('appointment_id'),
+                    'platform': platform,
+                    'doctor_id': doctor_id,
+                    'patient_info': patient_info,
+                    'appointment_details': appointment_details,
+                    'booking_status': 'confirmed',
+                    'booking_timestamp': datetime.now().isoformat(),
+                    'meeting_link': booking_result.get('meeting_link') or booking_result.get('meeting_details', {}).get('link'),
+                    'payment_link': booking_result.get('payment_link')
+                }
+                
+                db.collection('users').document(uid).collection('external_appointments').add(booking_record)
+            except Exception as e:
+                logging.error(f"Failed to store external booking locally: {e}")
+        
+        return jsonify(booking_result)
+        
+    except Exception as e:
+        logging.error(f'Error in book_external_appointment: {e}')
+        return jsonify({'error': 'Failed to book external appointment'}), 500
 
 @app.route('/place_autocomplete', methods=['POST'])
 def place_autocomplete():
@@ -2683,7 +3693,7 @@ def internal_error(e):
 for _ep in [
     '/request_consult','/list_open_consults','/accept_consult','/list_my_consults',
     '/get_consult_messages','/send_consult_message','/search_patients','/get_patient_history',
-    '/get_patient_active_consult','/get_chat_session_messages','/list_chat_sessions','/analyze_chat_session','/auto_analyze_session','/get_profile','/get_all_patient_data','/update_profile','/rename_chat_session','/place_autocomplete','/upload_consult_attachment','/list_consult_attachments','/get_consult_attachment'
+    '/get_patient_active_consult','/get_chat_session_messages','/list_chat_sessions','/analyze_chat_session','/auto_analyze_session','/get_profile','/get_all_patient_data','/update_profile','/rename_chat_session','/place_autocomplete','/upload_consult_attachment','/list_consult_attachments','/get_consult_attachment','/search_medical_info','/get_condition_info'
 ]:
     app.add_url_rule(_ep, methods=['OPTIONS'], endpoint=f'options_{_ep.strip("/")}', view_func=lambda: ('',204))
 

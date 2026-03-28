@@ -48,7 +48,18 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Chat failed');
-      setMessages(prev => [...prev, { role: 'bot', text: data.message, lang: data.language, ts: Date.now() }]);
+      
+      // Create bot message with MedlinePlus enhancement data
+      const botMessage = { 
+        role: 'bot', 
+        text: data.message, 
+        lang: data.language, 
+        ts: Date.now(),
+        medlineplus_enhanced: data.medlineplus_enhanced,
+        medical_sources: data.medical_sources || []
+      };
+      
+      setMessages(prev => [...prev, botMessage]);
       if (data.session_id && data.session_id !== sessionId) {
         setSessionId(data.session_id);
         localStorage.setItem('activeChatSession', data.session_id);
@@ -448,10 +459,57 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
           const prev = messages[i-1];
             const grouped = prev && prev.role === m.role;
             const key = m.id || `${m.ts || ''}-${i}`; // ensure uniqueness
-            if (m.role === 'bot' && typeof m.text === 'string' && looksLikeHtml(m.text)) {
-              const safe = sanitizeHtml(m.text);
-              return <div key={key} className={`bubble ${m.role} ${grouped? 'grouped':''}`} dangerouslySetInnerHTML={{__html: safe}} />;
+            
+            if (m.role === 'bot') {
+              let bubbleContent;
+              if (typeof m.text === 'string' && looksLikeHtml(m.text)) {
+                const safe = sanitizeHtml(m.text);
+                bubbleContent = <div dangerouslySetInnerHTML={{__html: safe}} />;
+              } else {
+                const content = pendingMeta?.evidence ? highlightedText(m.text) : m.text;
+                bubbleContent = <div>{content}</div>;
+              }
+              
+              // Add MedlinePlus sources if available
+              const medicalSources = m.medical_sources && m.medical_sources.length > 0 ? (
+                <div style={{
+                  marginTop: '8px',
+                  padding: '8px',
+                  backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                  borderRadius: '6px',
+                  borderLeft: '3px solid #2196F3'
+                }}>
+                  <div style={{fontSize: '0.75rem', fontWeight: 'bold', marginBottom: '4px', color: '#2196F3'}}>
+                    📚 Medical Sources (MedlinePlus)
+                  </div>
+                  {m.medical_sources.slice(0, 2).map((source, idx) => (
+                    <div key={idx} style={{fontSize: '0.7rem', marginBottom: '4px'}}>
+                      <strong>{source.title}</strong>
+                      {source.url && (
+                        <div>
+                          <a 
+                            href={source.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            style={{color: '#2196F3', textDecoration: 'none'}}
+                          >
+                            → Read more on MedlinePlus
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+              
+              return (
+                <div key={key} className={`bubble ${m.role} ${grouped? 'grouped':''}`}>
+                  {bubbleContent}
+                  {medicalSources}
+                </div>
+              );
             }
+            
             const content = pendingMeta?.evidence ? highlightedText(m.text) : m.text;
             return <div key={key} className={`bubble ${m.role} ${grouped? 'grouped':''}`}>{content}</div>;
         })}
@@ -475,7 +533,11 @@ export default function ChatBot({ backend, uid, notify, onNavigateHistory, role 
           <button type="button" className="secondary" disabled={consultLoading || messages.length===0} onClick={escalateToDoctor}>{consultLoading? '...' : 'Contact Doctor'}</button>
         )}
       </form>
-      {consultRequestId && <div className="alert info" style={{marginTop:6}}>Consult request submitted. ID: {consultRequestId.slice(0,8)}… Waiting for a doctor to accept.</div>}
+      {consultRequestId && consultStatus !== 'accepted' && (
+        <div className="alert info" style={{marginTop:6}}>
+          Consult request submitted. ID: {consultRequestId.slice(0,8)}… Waiting for a doctor to accept.
+        </div>
+      )}
       {consultRequestId && consultStatus==='accepted' && (
         <div className="consult-chat" style={{marginTop:12,display:'flex',flexDirection:'column',gap:8}}>
           <div className="alert success" style={{margin:0}}>Doctor connected. You can chat below.</div>

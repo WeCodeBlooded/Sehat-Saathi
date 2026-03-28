@@ -1,43 +1,27 @@
 [
   {
-    "keywords": ["hello", "hi", "hey", "namaste", "good morning", "good evening"],
-    "advice": "Hello! I'm your health assistant. I can help you with medical questions, symptom assessment, and health guidance. What health concerns would you like to discuss today?"
+    "keywords": ["fever", "bukhar", "high temperature"],
+    "advice": "For fever, take rest, drink clean water and fluids. Place a cool, damp cloth on the forehead. If the fever is above 102°F or lasts more than 2 days, visit the nearest clinic."
   },
   {
-    "keywords": ["how are you", "kaise ho", "what's up"],
-    "advice": "I'm here and ready to help with your health questions! How are you feeling? Do you have any symptoms or health concerns you'd like to discuss?"
+    "keywords": ["headache", "sir dard", "migraine"],
+    "advice": "For headache, rest in a quiet, dark room and drink water. Avoid loud noise and bright light. If the headache is severe, frequent, or with vomiting, seek medical help."
   },
   {
-    "keywords": ["thank you", "thanks", "bye", "goodbye"],
-    "advice": "You're welcome! Take care of your health. Remember, if you have serious symptoms or concerns, always consult with a healthcare professional. Stay healthy!"
+    "keywords": ["cold", "sardi", "khansi", "cough"],
+    "advice": "For cold and cough, drink warm fluids, take steam inhalation, and rest well. If cough lasts more than 1 week or has blood, consult a doctor immediately."
   },
   {
-    "keywords": ["help", "what can you do", "how does this work"],
-    "advice": "I'm Sehat Saathi, your AI health assistant. I can help you with: symptom assessment, basic medical advice, first aid guidance, when to seek medical care, and finding healthcare services. Just describe your symptoms or health concerns!"
+    "keywords": ["stomach pain", "pet dard", "abdominal pain"],
+    "advice": "For mild stomach pain, drink clean water and eat light, bland food. Avoid spicy and oily items. If pain is severe, with vomiting or blood in stool, visit the nearest hospital."
   },
   {
-    "keywords": ["fever", "bukhar", "high temperature", "temperature high"],
-    "advice": "For fever: Rest in a cool environment, drink plenty of fluids (water, ORS, fruit juices). Use cool compresses on forehead. Take paracetamol if needed. **Seek immediate care if**: fever >103°F (39.4°C), persistent for >3 days, with severe headache, difficulty breathing, chest pain, or rash."
+    "keywords": ["diarrhea", "loose motion", "dust"],
+    "advice": "For diarrhea, drink ORS or rice water to prevent dehydration. Avoid street food. If diarrhea lasts more than 2 days, or with blood, see a doctor."
   },
   {
-    "keywords": ["headache", "sir dard", "migraine", "head pain", "skull pain"],
-    "advice": "For headaches: Rest in a quiet, dark room and stay hydrated. Apply cool compress to forehead. Avoid screens and loud noises. **Seek immediate care if**: sudden severe headache, headache with fever/stiff neck, vision changes, weakness, or persistent vomiting. For migraines: identify triggers, maintain regular sleep schedule."
-  },
-  {
-    "keywords": ["cold", "sardi", "khansi", "cough", "runny nose", "nasal congestion", "sneeze", "sneezing"],
-    "advice": "For cold & cough: Rest, drink warm fluids (tea, soup, warm water), use steam inhalation 2-3 times daily. Gargle with salt water. Avoid cold foods/drinks. **Consult doctor if**: fever >101°F, cough with blood, breathing difficulty, symptoms persist >7 days, or chest pain."
-  },
-  {
-    "keywords": ["stomach pain", "pet dard", "abdominal pain", "belly pain", "stomach ache", "gastric pain"],
-    "advice": "For stomach pain: Eat light, bland foods (rice, toast, bananas). Avoid spicy/oily foods. Stay hydrated with small sips of water. **Seek immediate care if**: severe pain, vomiting blood, blood in stool, fever with pain, pain that worsens, or signs of dehydration."
-  },
-  {
-    "keywords": ["diarrhea", "loose motion", "dust", "loose stools", "watery stool"],
-    "advice": "For diarrhea: Drink ORS solution frequently, avoid dairy/fatty foods, eat BRAT diet (bananas, rice, applesauce, toast). Maintain hygiene, wash hands frequently. **Seek immediate care if**: blood in stool, high fever, severe dehydration (dizziness, dry mouth, no urination), persistent >3 days."
-  },
-  {
-    "keywords": ["vomiting", "ulti", "nausea", "throwing up", "feel sick"],
-    "advice": "For vomiting/nausea: Sip small amounts of clear fluids (water, ORS, ginger tea). Avoid solid foods initially. Rest in upright position. **Seek immediate care if**: vomiting blood, severe dehydration, inability to keep fluids down >24 hours, severe abdominal pain, or signs of poisoning."
+    "keywords": ["vomiting", "ulti", "nausea"],
+    "advice": "For vomiting, sip small amounts of clean water or ORS. Avoid solid food until vomiting stops. If continuous or with blood, go to the hospital quickly."
   },
   {
     "keywords": ["dehydration", "pyaas", "kam pani"],
@@ -119,6 +103,8 @@
     "keywords": ["wheezing", "asthma attack", "bronchospasm"],
     "advice": "For wheezing or asthma symptoms, use prescribed inhaler if available, sit upright, and stay calm. If severe wheezing, unable to speak in full sentences, or no improvement with medication, seek emergency care immediately."
   },
+
+  // NEUROLOGICAL CONDITIONS
   {
     "keywords": ["stroke symptoms", "face drooping", "arm weakness", "speech problems", "paralysis"],
     "advice": "STROKE EMERGENCY: If someone has face drooping, arm weakness, or speech problems, call emergency services IMMEDIATELY. Time is critical for stroke treatment. Do not give food, water, or medications."
@@ -135,6 +121,8 @@
     "keywords": ["memory loss", "forgetfulness", "confusion", "dementia symptoms"],
     "advice": "For memory problems or confusion, ensure safety first. If sudden confusion or severe memory loss, seek immediate medical evaluation. Gradual memory changes should be discussed with a healthcare provider for proper assessment."
   },
+
+  // GASTROINTESTINAL CONDITIONS
   {
     "keywords": ["acid reflux", "heartburn", "GERD", "acidity", "gas problem"],
     "advice": "For acid reflux, eat smaller meals, avoid spicy/fatty foods, don't lie down after eating, and elevate head while sleeping. If symptoms persist, worsen, or include difficulty swallowing, consult a doctor."
@@ -151,6 +139,8 @@
     "keywords": ["jaundice", "yellow eyes", "yellow skin", "liver problems"],
     "advice": "Yellow coloring of eyes or skin suggests liver problems requiring immediate medical attention. Avoid alcohol, rest, and see a doctor urgently. This can be serious and needs proper evaluation."
   },
+
+  // MUSCULOSKELETAL CONDITIONS
   {
     "keywords": ["back pain", "lower back pain", "spine pain", "kamar dard"],
     "advice": "For back pain, rest in comfortable position, apply heat/ice, gentle stretching, and avoid heavy lifting. If pain radiates to legs, causes numbness, or is severe after injury, see a doctor promptly."
@@ -167,6 +157,8 @@
     "keywords": ["fracture", "broken bone", "bone injury", "haddi tutna"],
     "advice": "For suspected fracture, don't move the injured area, apply ice, elevate if possible, and seek immediate medical care. Do not attempt to realign or move the bone. Call emergency services for severe injuries."
   },
+
+  // DERMATOLOGICAL CONDITIONS
   {
     "keywords": ["rash", "skin rash", "itchy skin", "allergy", "khujli"],
     "advice": "For skin rash, keep area clean and dry, avoid scratching, use mild soap, and identify/avoid triggers. If rash spreads rapidly, has blisters, or is accompanied by fever/breathing problems, seek immediate medical care."
@@ -179,6 +171,8 @@
     "keywords": ["acne", "pimples", "blackheads", "facial breakouts"],
     "advice": "For acne, wash face gently twice daily, don't pick or squeeze, use non-comedogenic products, and maintain good hygiene. If severe, cystic, or causing scarring, consult a dermatologist for treatment options."
   },
+
+  // ENDOCRINE CONDITIONS
   {
     "keywords": ["diabetes", "high blood sugar", "frequent urination", "excessive thirst", "madhumeh"],
     "advice": "For diabetes symptoms (frequent urination, excessive thirst, fatigue), monitor blood sugar if possible, maintain healthy diet, and consult a doctor for proper testing. Extremely high blood sugar requires immediate medical attention."
@@ -187,6 +181,8 @@
     "keywords": ["thyroid problems", "hyperthyroid", "hypothyroid", "thyroid gland"],
     "advice": "Thyroid symptoms (weight changes, fatigue, heart rate changes, mood changes) require medical evaluation and blood tests. Take prescribed medications as directed and follow up regularly with healthcare provider."
   },
+
+  // MENTAL HEALTH CONDITIONS
   {
     "keywords": ["depression", "sadness", "hopelessness", "suicidal thoughts", "mental health"],
     "advice": "For depression or suicidal thoughts, reach out to mental health professionals, trusted friends/family, or crisis helplines immediately. You're not alone - help is available. In crisis, call emergency services or go to nearest hospital."
@@ -199,6 +195,8 @@
     "keywords": ["insomnia", "sleep problems", "can't sleep", "neend nahi aana"],
     "advice": "For sleep problems, maintain regular sleep schedule, avoid caffeine/screens before bed, create comfortable sleep environment, and practice relaxation techniques. If chronic insomnia persists, consult a doctor to rule out underlying conditions."
   },
+
+  // INFECTIOUS DISEASES
   {
     "keywords": ["malaria", "typhoid", "dengue", "viral fever", "tropical fever"],
     "advice": "For suspected malaria, typhoid, or dengue (high fever, chills, headache, body aches), seek immediate medical testing and treatment. These conditions can be serious if untreated. Maintain hydration and rest while awaiting medical care."
@@ -211,6 +209,8 @@
     "keywords": ["food poisoning", "stomach infection", "gastroenteritis"],
     "advice": "For food poisoning, stay hydrated with clear fluids, rest, and eat bland foods when able. If severe dehydration, high fever, blood in vomit/stool, or symptoms worsen, seek medical attention promptly."
   },
+
+  // EMERGENCY CONDITIONS
   {
     "keywords": ["poisoning", "toxic ingestion", "drug overdose", "chemical exposure"],
     "advice": "POISON EMERGENCY: Call poison control center or emergency services immediately. Do not induce vomiting unless instructed. If conscious, give water/milk only if advised. Bring the substance container if safe to do so."
@@ -223,6 +223,8 @@
     "keywords": ["choking", "can't breathe", "obstruction", "foreign object"],
     "advice": "CHOKING EMERGENCY: For choking adult - encourage coughing, if ineffective perform Heimlich maneuver (abdominal thrusts). For infant - back blows and chest thrusts. Call emergency services if object doesn't dislodge."
   },
+
+  // PEDIATRIC CONDITIONS  
   {
     "keywords": ["infant fever", "baby fever", "child high temperature", "bachhe mein bukhar"],
     "advice": "For infant fever (<3 months with fever >100.4°F), seek immediate medical care. For older children, ensure hydration, comfortable clothing, and monitor closely. If fever >103°F, difficulty breathing, or child appears very ill, see doctor urgently."
@@ -231,40 +233,10 @@
     "keywords": ["child cough", "baby cough", "pediatric respiratory", "bachhe ki khansi"],
     "advice": "For child's cough, ensure hydration, humid air, and honey for >1 year old. If baby <3 months, difficulty breathing, wheezing, or cough persists >1 week, consult pediatrician. Barking cough may indicate croup - seek medical care."
   },
+
+  // GERIATRIC CONDITIONS
   {
     "keywords": ["elderly falls", "senior citizen health", "old age problems", "geriatric care"],
     "advice": "For elderly health concerns, ensure medication compliance, regular check-ups, fall prevention measures, and social support. Any sudden changes in mental status, mobility, or function require prompt medical evaluation."
-  },
-  {
-    "keywords": ["chest pain", "heart pain", "cardiac pain", "heart attack symptoms"],
-    "advice": "🚨 CHEST PAIN EMERGENCY: Call emergency services immediately if experiencing chest pain, especially with sweating, nausea, shortness of breath, or pain radiating to arm/jaw. Do not drive yourself - wait for ambulance. Chew aspirin if not allergic and advised by emergency operator."
-  },
-  {
-    "keywords": ["breathing difficulty", "shortness of breath", "can't breathe", "breathless"],
-    "advice": "🚨 BREATHING EMERGENCY: If severe breathing difficulty, call emergency services. Sit upright, loosen tight clothing, try to stay calm. Use inhaler if prescribed. Seek immediate care for: blue lips/face, chest pain with breathing difficulty, wheezing that doesn't improve."
-  },
-  {
-    "keywords": ["anxiety", "panic attack", "stress", "worried", "nervous"],
-    "advice": "For anxiety/panic: Practice deep breathing (4 counts in, hold 4, out 4), find quiet space, ground yourself (5 things you see, 4 you hear, etc.). Regular exercise, adequate sleep help long-term. **Seek help if**: thoughts of self-harm, panic attacks interfere with daily life, persistent anxiety >2 weeks."
-  },
-  {
-    "keywords": ["depression", "sad", "hopeless", "suicidal thoughts", "mental health"],
-    "advice": "Mental health is important. Practice self-care, maintain routines, connect with supportive people, engage in activities you enjoy. **Seek immediate help if**: thoughts of self-harm or suicide, inability to function daily, persistent sadness >2 weeks. Contact mental health helpline or emergency services."
-  },
-  {
-    "keywords": ["diabetes", "blood sugar", "high glucose", "diabetic"],
-    "advice": "For diabetes management: Monitor blood sugar regularly, follow prescribed diet, take medications as directed, exercise regularly, maintain healthy weight. **Seek immediate care for**: very high/low blood sugar, persistent vomiting, fruity breath odor, extreme thirst, confusion."
-  },
-  {
-    "keywords": ["high blood pressure", "hypertension", "BP high"],
-    "advice": "For high BP: Reduce salt intake, maintain healthy weight, exercise regularly, limit alcohol, manage stress, take medications as prescribed. **Seek immediate care if**: BP >180/120 with symptoms like headache, chest pain, vision changes, or difficulty breathing."
-  },
-  {
-    "keywords": ["pregnancy", "pregnant", "expecting", "maternity"],
-    "advice": "During pregnancy: Take prenatal vitamins, eat nutritious foods, avoid alcohol/smoking, get regular prenatal check-ups, stay hydrated, get adequate rest. **Contact doctor immediately for**: severe nausea/vomiting, bleeding, severe headache, vision changes, decreased fetal movement."
-  },
-  {
-    "keywords": ["child fever", "baby fever", "infant fever", "pediatric fever"],
-    "advice": "For child fever: Keep child hydrated, dress lightly, use lukewarm sponging. Paracetamol/ibuprofen per age guidelines. **Seek immediate care for**: fever in baby <3 months, fever >104°F, difficulty breathing, persistent crying, rash, stiff neck, or signs of dehydration."
   }
 ]

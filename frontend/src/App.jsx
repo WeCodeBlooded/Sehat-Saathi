@@ -4,11 +4,13 @@ import ChatBot from './components/ChatBot';
 import TeleCounselling from './components/TeleCounselling';
 import HospitalLocator from './components/HospitalLocator';
 import HealthHistory from './components/HealthHistory';
+import MedicalSearch from './components/MedicalSearch';
 import AuthPanel from './components/Auth';
 
 const FEATURE_SETS = {
 	patient: {
 		chatbot: { label: 'Chatbot', icon: '💬' },
+		medical_search: { label: 'Medical Info', icon: '🔍' },
 		tele: { label: 'Tele-Counselling', icon: '🗓️' },
 		hospitals: { label: 'Hospital Locator', icon: '🗺️' },
 		history: { label: 'Health History', icon: '📘' }
@@ -16,6 +18,7 @@ const FEATURE_SETS = {
 	doctor: {
 		doctor_dashboard: { label: 'Doctor Dashboard', icon: '🩺' },
 		my_consults: { label: 'My Consults', icon: '💻' },
+		medical_search: { label: 'Medical Info', icon: '🔍' },
 		hospitals: { label: 'Locator', icon: '🗺️' },
 		patient_overview: { label: 'Patients Health', icon: '📂' }
 	}
@@ -485,11 +488,7 @@ export default function App() {
 	const [editName, setEditName] = useState('');
 	const [editMobile, setEditMobile] = useState('');
 	const [profileSaving, setProfileSaving] = useState(false);
-		const [dark, setDark] = useState(() => {
-			const stored = localStorage.getItem('theme');
-			if (stored) return stored === 'dark';
-			return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-		});
+		// Removed dark theme functionality - using only light healthcare theme
 		const [collapsedNav, setCollapsedNav] = useState(() => localStorage.getItem('navCollapsed') === '1');
 		const [toasts, setToasts] = useState([]);
 		const toastIdRef = useRef(0);
@@ -557,10 +556,7 @@ export default function App() {
 		return () => { cancelled = true; };
 	}, [uid]);
 
-		useEffect(() => {
-			document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-			localStorage.setItem('theme', dark ? 'dark' : 'light');
-		}, [dark]);
+		// Removed theme switching - always using healthcare light theme
 
 		useEffect(()=> { localStorage.setItem('navCollapsed', collapsedNav ? '1':'0'); }, [collapsedNav]);
 
@@ -591,6 +587,8 @@ export default function App() {
 				return <MyConsults backend={BACKEND_URL} uid={uid} notify={pushToast} />;
 			case 'chatbot':
 				return <ChatBot backend={BACKEND_URL} uid={uid} role={role} notify={pushToast} onNavigateHistory={() => setActive('history')} />;
+			case 'medical_search':
+				return <MedicalSearch backend={BACKEND_URL} notify={pushToast} />;
 			case 'tele':
 				return <TeleCounselling backend={BACKEND_URL} uid={uid} notify={pushToast} />;
 			case 'hospitals':
@@ -625,9 +623,7 @@ export default function App() {
 				</nav>
 				<div className="grow" />
 				<div className="nav-footer">
-								<button className="secondary" onClick={() => setDark(d => !d)}>
-						{dark ? '🌞 Light' : '🌙 Dark'}
-					</button>
+								{/* Removed theme toggle button */}
 					{uid ? (
 						<button className="secondary" onClick={logout}>Logout</button>
 					) : null}
